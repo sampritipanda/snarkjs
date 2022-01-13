@@ -1128,13 +1128,21 @@ async function wtnsCalculate(input, wasmFileName, wtnsFileName, options) {
     await fdWasm.close();
 
     const wc = await circom_runtime.WitnessCalculatorBuilder(wasm);
-    const w = await wc.calculateBinWitness(input);
+    if (wc.circom_version() == 1) {
+        const w = await wc.calculateBinWitness(input);
 
-    const fdWtns = await binFileUtils__namespace.createBinFile(wtnsFileName, "wtns", 2, 2);
+        const fdWtns = await binFileUtils__namespace.createBinFile(wtnsFileName, "wtns", 2, 2);
 
-    await writeBin(fdWtns, w, wc.prime);
-    await fdWtns.close();
+        await writeBin(fdWtns, w, wc.prime);
+        await fdWtns.close();
+    } else {
+        const fdWtns = await fastFile__namespace.createOverride(wtnsFileName);
 
+        const w = await wc.calculateWTNSBin(input);
+
+        await fdWtns.write(w);
+        await fdWtns.close();
+    }
 }
 
 /*
