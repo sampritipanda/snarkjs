@@ -40,7 +40,7 @@
   "dependencies": {
     "@iden3/binfileutils": "0.0.8",
     "blake2b-wasm": "^2.3.0",
-    "circom_runtime": "github:nalinbhardwaj/circom_runtime#dd269b1fc5e2689943874b30843395f9e8b47d32",
+    "circom_runtime": "github:nalinbhardwaj/circom_runtime#603c0d136f99c1d561781d37835618db63b2d469",
     "ejs": "^3.1.6",
     "fastfile": "0.0.19",
     "ffjavascript": "0.2.39",
