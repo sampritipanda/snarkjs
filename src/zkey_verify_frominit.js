@@ -18,6 +18,7 @@
 */
 
 import * as binFileUtils from "@iden3/binfileutils";
+import * as chunkFileUtils from "./chunk_utils.js";
 import * as zkeyUtils from "./zkey_utils.js";
 import { getCurveFromQ as getCurve } from "./curves.js";
 import Blake2b from "blake2b-wasm";
@@ -34,9 +35,9 @@ export default async function phase2verifyFromInit(initFileName, pTauFileName, z
 
     let sr;
     await Blake2b.ready();
+    const maxZKeyVersion = 2;
 
-    const {fd, sections} = await binFileUtils.readBinFile(zkeyFileName, "zkey", 2);
-    const zkey = await zkeyUtils.readHeader(fd, sections, false);
+    const zkey = await zkeyUtils.readHeader(zkeyFileName, maxZKeyVersion);
     if (zkey.protocol != "groth16") {
         throw new Error("zkey file is not groth16");
     }
@@ -44,7 +45,7 @@ export default async function phase2verifyFromInit(initFileName, pTauFileName, z
     const curve = await getCurve(zkey.q);
     const sG1 = curve.G1.F.n8*2;
 
-    const mpcParams = await zkeyUtils.readMPCParams(fd, curve, sections);
+    const mpcParams = await zkeyUtils.readMPCParams(zkeyFileName, maxZKeyVersion, curve);
 
     const accumulatedHasher = Blake2b(64);
     accumulatedHasher.update(mpcParams.csHash);
@@ -101,8 +102,7 @@ export default async function phase2verifyFromInit(initFileName, pTauFileName, z
     }
 
 
-    const {fd: fdInit, sections: sectionsInit} = await binFileUtils.readBinFile(initFileName, "zkey", 2);
-    const zkeyInit = await zkeyUtils.readHeader(fdInit, sectionsInit, false);
+    const zkeyInit = await zkeyUtils.readHeader(initFileName, maxZKeyVersion, false);
 
     if (zkeyInit.protocol != "groth16") {
         throw new Error("zkeyinit file is not groth16");
@@ -151,56 +151,45 @@ export default async function phase2verifyFromInit(initFileName, pTauFileName, z
         return false;
     }
 
-    const mpcParamsInit = await zkeyUtils.readMPCParams(fdInit, curve, sectionsInit);
+    const mpcParamsInit = await zkeyUtils.readMPCParams(initFileName, maxZKeyVersion, curve);
     if (!misc.hashIsEqual(mpcParams.csHash, mpcParamsInit.csHash)) {
         if (logger) logger.error("INVALID:  Circuit does not match");
         return false;
     }
 
-    // Check sizes of sections
-    if (sections[8][0].size != sG1*(zkey.nVars-zkey.nPublic-1)) {
-        if (logger) logger.error("INVALID:  Invalid L section size");
-        return false;
-    }
-
-    if (sections[9][0].size != sG1*(zkey.domainSize)) {
-        if (logger) logger.error("INVALID:  Invalid H section size");
-        return false;
-    }
-
     let ss;
-    ss = await binFileUtils.sectionIsEqual(fd, sections, fdInit, sectionsInit, 3);
+    ss = await chunkFileUtils.sectionFileIsEqual(initFileName, zkeyFileName, 3, maxZKeyVersion);
     if (!ss) {
         if (logger) logger.error("INVALID:  IC section is not identical");
         return false;
     }
 
-    ss = await binFileUtils.sectionIsEqual(fd, sections, fdInit, sectionsInit, 4);
+    ss = await chunkFileUtils.sectionFileIsEqual(initFileName, zkeyFileName, 4, maxZKeyVersion);
     if (!ss) {
         if (logger) logger.error("Coeffs section is not identical");
         return false;
     }
 
-    ss = await binFileUtils.sectionIsEqual(fd, sections, fdInit, sectionsInit, 5);
+    ss = await chunkFileUtils.sectionFileIsEqual(initFileName, zkeyFileName, 5, maxZKeyVersion);
     if (!ss) {
         if (logger) logger.error("A section is not identical");
         return false;
     }
 
-    ss = await binFileUtils.sectionIsEqual(fd, sections, fdInit, sectionsInit, 6);
+    ss = await chunkFileUtils.sectionFileIsEqual(initFileName, zkeyFileName, 6, maxZKeyVersion);
     if (!ss) {
         if (logger) logger.error("B1 section is not identical");
         return false;
     }
 
-    ss = await binFileUtils.sectionIsEqual(fd, sections, fdInit, sectionsInit, 7);
+    ss = await chunkFileUtils.sectionFileIsEqual(initFileName, zkeyFileName, 7, maxZKeyVersion);
     if (!ss) {
         if (logger) logger.error("B2 section is not identical");
         return false;
     }
 
     // Check L
-    sr = await sectionHasSameRatio("G1", fdInit, sectionsInit, fd, sections, 8, zkey.vk_delta_2, zkeyInit.vk_delta_2, "L section");
+    sr = await sectionHasSameRatio("G1", initFileName, zkeyFileName, maxZKeyVersion, 8, zkey.vk_delta_2, zkeyInit.vk_delta_2, "L section");
     if (sr!==true) {
         if (logger) logger.error("L section does not match");
         return false;
@@ -214,9 +203,6 @@ export default async function phase2verifyFromInit(initFileName, pTauFileName, z
     }
 
     if (logger) logger.info(misc.formatHash(mpcParams.csHash, "Circuit Hash: "));
-
-    await fd.close();
-    await fdInit.close();
 
     for (let i=mpcParams.contributions.length-1; i>=0; i--) {
         const c = mpcParams.contributions[i];
@@ -234,23 +220,23 @@ export default async function phase2verifyFromInit(initFileName, pTauFileName, z
     return true;
 
 
-    async function sectionHasSameRatio(groupName, fd1, sections1, fd2, sections2, idSection, g2sp, g2spx, sectionName) {
+    async function sectionHasSameRatio(groupName, initFileName, zkeyFileName, maxZKeyVersion, idSection, g2sp, g2spx, sectionName) {
         const MAX_CHUNK_SIZE = 1<<20;
         const G = curve[groupName];
         const sG = G.F.n8*2;
-        await binFileUtils.startReadUniqueSection(fd1, sections1, idSection);
-        await binFileUtils.startReadUniqueSection(fd2, sections2, idSection);
+        const fdOld = await chunkFileUtils.startReadSectionFile(initFileName, idSection, maxZKeyVersion);
+        const fdNew = await chunkFileUtils.startReadSectionFile(zkeyFileName, idSection, maxZKeyVersion);
 
         let R1 = G.zero;
         let R2 = G.zero;
 
-        const nPoints = sections1[idSection][0].size / sG;
+        const nPoints = fdOld.readingSection.size / sG;
 
         for (let i=0; i<nPoints; i += MAX_CHUNK_SIZE) {
             if (logger) logger.debug(`Same ratio check ${sectionName}:  ${i}/${nPoints}`);
             const n = Math.min(nPoints - i, MAX_CHUNK_SIZE);
-            const bases1 = await fd1.read(n*sG);
-            const bases2 = await fd2.read(n*sG);
+            const bases1 = await fdOld.read(n*sG);
+            const bases2 = await fdNew.read(n*sG);
 
             const scalars = new Uint8Array(4*n);
             crypto.randomFillSync(scalars);
@@ -262,8 +248,8 @@ export default async function phase2verifyFromInit(initFileName, pTauFileName, z
             R1 = G.add(R1, r1);
             R2 = G.add(R2, r2);
         }
-        await binFileUtils.endReadSection(fd1);
-        await binFileUtils.endReadSection(fd2);
+        await chunkFileUtils.endReadSectionFile(fdOld);
+        await chunkFileUtils.endReadSectionFile(fdNew);
 
         if (nPoints == 0) return true;
 
@@ -332,7 +318,8 @@ export default async function phase2verifyFromInit(initFileName, pTauFileName, z
         buff_r = await Fr.fft(buff_r);
         buff_r = await Fr.batchFromMontgomery(buff_r);
 
-        await binFileUtils.startReadUniqueSection(fd, sections, 9);
+        const fd = await chunkFileUtils.startReadSectionFile(zkeyFileName, 9, maxZKeyVersion);
+
         let R2 = G.zero;
         for (let i=0; i<zkey.domainSize; i += MAX_CHUNK_SIZE) {
             if (logger) logger.debug(`H Verificaition(lagrange):  ${i}/${zkey.domainSize}`);
@@ -344,7 +331,7 @@ export default async function phase2verifyFromInit(initFileName, pTauFileName, z
 
             R2 = G.add(R2, r);
         }
-        await binFileUtils.endReadSection(fd);
+        await chunkFileUtils.endReadSectionFile(fd);
 
         sr = await sameRatio(curve, R1, R2, zkey.vk_delta_2, zkeyInit.vk_delta_2);
         if (sr !== true) return false;

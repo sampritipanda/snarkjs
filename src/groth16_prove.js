@@ -18,6 +18,7 @@
 */
 
 import * as binFileUtils from "@iden3/binfileutils";
+import * as chunkFileUtils from "./chunk_utils.js";
 import * as zkeyUtils from "./zkey_utils.js";
 import * as wtnsUtils from "./wtns_utils.js";
 import { getCurveFromQ as getCurve } from "./curves.js";
@@ -30,9 +31,9 @@ export default async function groth16Prove(zkeyFileName, witnessFileName, logger
 
     const wtns = await wtnsUtils.readHeader(fdWtns, sectionsWtns);
 
-    const {fd: fdZKey, sections: sectionsZKey} = await binFileUtils.readBinFile(zkeyFileName, "zkey", 2, 1<<25, 1<<23);
+    const maxZKeyVersion = 2;
 
-    const zkey = await zkeyUtils.readHeader(fdZKey, sectionsZKey);
+    const zkey = await zkeyUtils.readHeader(zkeyFileName, maxZKeyVersion);
 
     if (zkey.protocol != "groth16") {
         throw new Error("zkey file is not groth16");
@@ -56,7 +57,7 @@ export default async function groth16Prove(zkeyFileName, witnessFileName, logger
     if (logger) logger.debug("Reading Wtns");
     const buffWitness = await binFileUtils.readSection(fdWtns, sectionsWtns, 2);
     if (logger) logger.debug("Reading Coeffs");
-    const buffCoeffs = await binFileUtils.readSection(fdZKey, sectionsZKey, 4);
+    const buffCoeffs = await chunkFileUtils.readSectionFile(zkeyFileName, 4, maxZKeyVersion);
 
     if (logger) logger.debug("Building ABC");
     const [buffA_T, buffB_T, buffC_T] = await buildABC1(curve, zkey, buffWitness, buffCoeffs, logger);
@@ -81,23 +82,23 @@ export default async function groth16Prove(zkeyFileName, witnessFileName, logger
     let proof = {};
 
     if (logger) logger.debug("Reading A Points");
-    const buffBasesA = await binFileUtils.readSection(fdZKey, sectionsZKey, 5);
+    const buffBasesA = await chunkFileUtils.readSectionFile(zkeyFileName, 5, maxZKeyVersion);
     proof.pi_a = await curve.G1.multiExpAffine(buffBasesA, buffWitness, logger, "multiexp A");
 
     if (logger) logger.debug("Reading B1 Points");
-    const buffBasesB1 = await binFileUtils.readSection(fdZKey, sectionsZKey, 6);
+    const buffBasesB1 = await chunkFileUtils.readSectionFile(zkeyFileName, 6, maxZKeyVersion);
     let pib1 = await curve.G1.multiExpAffine(buffBasesB1, buffWitness, logger, "multiexp B1");
 
     if (logger) logger.debug("Reading B2 Points");
-    const buffBasesB2 = await binFileUtils.readSection(fdZKey, sectionsZKey, 7);
+    const buffBasesB2 = await chunkFileUtils.readSectionFile(zkeyFileName, 7, maxZKeyVersion);
     proof.pi_b = await curve.G2.multiExpAffine(buffBasesB2, buffWitness, logger, "multiexp B2");
 
     if (logger) logger.debug("Reading C Points");
-    const buffBasesC = await binFileUtils.readSection(fdZKey, sectionsZKey, 8);
+    const buffBasesC = await chunkFileUtils.readSectionFile(zkeyFileName, 8, maxZKeyVersion);
     proof.pi_c = await curve.G1.multiExpAffine(buffBasesC, buffWitness.slice((zkey.nPublic+1)*curve.Fr.n8), logger, "multiexp C");
 
     if (logger) logger.debug("Reading H Points");
-    const buffBasesH = await binFileUtils.readSection(fdZKey, sectionsZKey, 9);
+    const buffBasesH = await chunkFileUtils.readSectionFile(zkeyFileName, 9, maxZKeyVersion);
     const resH = await curve.G1.multiExpAffine(buffBasesH, buffPodd_T, logger, "multiexp H");
 
     const r = curve.Fr.random();
@@ -134,7 +135,6 @@ export default async function groth16Prove(zkeyFileName, witnessFileName, logger
     proof.protocol = "groth16";
     proof.curve = curve.name;
 
-    await fdZKey.close();
     await fdWtns.close();
 
     proof = stringifyBigInts(proof);
