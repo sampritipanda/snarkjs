@@ -19,13 +19,12 @@
 
 import {readR1csHeader} from "r1csfile";
 import * as utils from "./powersoftau_utils.js";
+import * as chunkFileUtils from './chunk_utils.js';
 import {
     readBinFile,
     createBinFile,
     readSection,
     writeBigInt,
-    startWriteSection,
-    endWriteSection,
 } from "@iden3/binfileutils";
 import { log2, formatHash } from "./misc.js";
 import { Scalar, BigBuffer } from "ffjavascript";
@@ -46,8 +45,6 @@ export default async function newZKey(r1csName, ptauName, zkeyName, logger) {
     const {curve, power} = await utils.readPTauHeader(fdPTau, sectionsPTau);
     const {fd: fdR1cs, sections: sectionsR1cs} = await readBinFile(r1csName, "r1cs", 1, 1<<22, 1<<24);
     const r1cs = await readR1csHeader(fdR1cs, sectionsR1cs, false);
-
-    const fdZKey = await createBinFile(zkeyName, "zkey", 1, 10, 1<<22, 1<<24);
 
     const sG1 = curve.G1.F.n8*2;
     const sG2 = curve.G2.F.n8*2;
@@ -74,14 +71,14 @@ export default async function newZKey(r1csName, ptauName, zkeyName, logger) {
 
     // Write the header
     ///////////
-    await startWriteSection(fdZKey, 1);
-    await fdZKey.writeULE32(1); // Groth
-    await endWriteSection(fdZKey);
+    const fdSection1 = await chunkFileUtils.startWriteSectionFile(zkeyName, 1);
+    await fdSection1.writeULE32(1); // Groth
+    await chunkFileUtils.endWriteSectionFile(fdSection1);
+
 
     // Write the Groth header section
     ///////////
-
-    await startWriteSection(fdZKey, 2);
+    const fdSection2 = await chunkFileUtils.startWriteSectionFile(zkeyName, 2);
     const primeQ = curve.q;
     const n8q = (Math.floor( (Scalar.bitLength(primeQ) - 1) / 64) +1)*8;
 
@@ -90,29 +87,29 @@ export default async function newZKey(r1csName, ptauName, zkeyName, logger) {
     const Rr = Scalar.mod(Scalar.shl(1, n8r*8), primeR);
     const R2r = curve.Fr.e(Scalar.mod(Scalar.mul(Rr,Rr), primeR));
 
-    await fdZKey.writeULE32(n8q);
-    await writeBigInt(fdZKey, primeQ, n8q);
-    await fdZKey.writeULE32(n8r);
-    await writeBigInt(fdZKey, primeR, n8r);
-    await fdZKey.writeULE32(r1cs.nVars);                         // Total number of bars
-    await fdZKey.writeULE32(nPublic);                       // Total number of public vars (not including ONE)
-    await fdZKey.writeULE32(domainSize);                  // domainSize
+    await fdSection2.writeULE32(n8q);
+    await writeBigInt(fdSection2, primeQ, n8q);
+    await fdSection2.writeULE32(n8r);
+    await writeBigInt(fdSection2, primeR, n8r);
+    await fdSection2.writeULE32(r1cs.nVars);                         // Total number of bars
+    await fdSection2.writeULE32(nPublic);                       // Total number of public vars (not including ONE)
+    await fdSection2.writeULE32(domainSize);                  // domainSize
 
     let bAlpha1;
     bAlpha1 = await fdPTau.read(sG1, sectionsPTau[4][0].p);
-    await fdZKey.write(bAlpha1);
+    await fdSection2.write(bAlpha1);
     bAlpha1 = await curve.G1.batchLEMtoU(bAlpha1);
     csHasher.update(bAlpha1);
 
     let bBeta1;
     bBeta1 = await fdPTau.read(sG1, sectionsPTau[5][0].p);
-    await fdZKey.write(bBeta1);
+    await fdSection2.write(bBeta1);
     bBeta1 = await curve.G1.batchLEMtoU(bBeta1);
     csHasher.update(bBeta1);
 
     let bBeta2;
     bBeta2 = await fdPTau.read(sG2, sectionsPTau[6][0].p);
-    await fdZKey.write(bBeta2);
+    await fdSection2.write(bBeta2);
     bBeta2 = await curve.G2.batchLEMtoU(bBeta2);
     csHasher.update(bBeta2);
 
@@ -125,13 +122,13 @@ export default async function newZKey(r1csName, ptauName, zkeyName, logger) {
     const bg2U = new Uint8Array(sG2);
     curve.G2.toRprUncompressed(bg2U, 0, curve.G2.g);
 
-    await fdZKey.write(bg2);        // gamma2
-    await fdZKey.write(bg1);        // delta1
-    await fdZKey.write(bg2);        // delta2
+    await fdSection2.write(bg2);        // gamma2
+    await fdSection2.write(bg1);        // delta1
+    await fdSection2.write(bg2);        // delta2
     csHasher.update(bg2U);      // gamma2
     csHasher.update(bg1U);      // delta1
     csHasher.update(bg2U);      // delta2
-    await endWriteSection(fdZKey);
+    await chunkFileUtils.endWriteSectionFile(fdSection2);
 
     if (logger) logger.info("Reading r1cs");
     let sR1cs = await readSection(fdR1cs, sectionsR1cs, 2);
@@ -166,22 +163,20 @@ export default async function newZKey(r1csName, ptauName, zkeyName, logger) {
 
     const csHash = csHasher.digest();
     // Contributions section
-    await startWriteSection(fdZKey, 10);
-    await fdZKey.write(csHash);
-    await fdZKey.writeULE32(0);
-    await endWriteSection(fdZKey);
+    const fdSection10 = await chunkFileUtils.startWriteSectionFile(zkeyName, 10);
+    await fdSection10.write(csHash);
+    await fdSection10.writeULE32(0);
+    await chunkFileUtils.endWriteSectionFile(fdSection10);
 
     if (logger) logger.info(formatHash(csHash, "Circuit hash: "));
 
 
-    await fdZKey.close();
     await fdR1cs.close();
     await fdPTau.close();
 
     return csHash;
 
     async function writeHs() {
-        await startWriteSection(fdZKey, 9);
         const buffOut = new BigBuffer(domainSize*sG1);
         if (cirPower < curve.Fr.s) {
             let sTauG1 = await readSection(fdPTau, sectionsPTau, 12, (domainSize*2-1)*sG1, domainSize*2*sG1);
@@ -197,8 +192,9 @@ export default async function newZKey(r1csName, ptauName, zkeyName, logger) {
             if (logger) logger.error("Circuit too big");
             throw new Error("Circuit too big for this curve");
         }
-        await fdZKey.write(buffOut);
-        await endWriteSection(fdZKey);
+        const fdSection9 = await chunkFileUtils.startWriteSectionFile(zkeyName, 9);
+        await fdSection9.write(buffOut);
+        await chunkFileUtils.endWriteSectionFile(fdSection9);
     }
 
     async function processConstraints() {
@@ -300,9 +296,6 @@ export default async function newZKey(r1csName, ptauName, zkeyName, logger) {
             coefs.push([0, r1cs.nConstraints + s, s, -1]);
         }
 
-
-        await startWriteSection(fdZKey, 4);
-
         const buffSection = new BigBuffer(coefs.length*(12+curve.Fr.n8) + 4);
 
         const buff4 = new Uint8Array(4);
@@ -315,8 +308,9 @@ export default async function newZKey(r1csName, ptauName, zkeyName, logger) {
             writeCoef(coefs[i]);
         }
 
-        await fdZKey.write(buffSection);
-        await endWriteSection(fdZKey);
+        const fdSection4 = await chunkFileUtils.startWriteSectionFile(zkeyName, 4);
+        await fdSection4.write(buffSection);
+        await chunkFileUtils.endWriteSectionFile(fdSection4);
 
         function writeCoef(c) {
             buffCoeffV.setUint32(0, c[0], true);
@@ -341,7 +335,7 @@ export default async function newZKey(r1csName, ptauName, zkeyName, logger) {
         const G = curve[groupName];
 
         hashU32(arr.length);
-        await startWriteSection(fdZKey, idSection);
+        const fdSection = await chunkFileUtils.startWriteSectionFile(zkeyName, idSection);
 
         let opPromises = [];
 
@@ -370,14 +364,14 @@ export default async function newZKey(r1csName, ptauName, zkeyName, logger) {
             const result = await Promise.all(opPromises);
 
             for (let k=0; k<result.length; k++) {
-                await fdZKey.write(result[k][0]);
+                await fdSection.write(result[k][0]);
                 const buff = await G.batchLEMtoU(result[k][0]);
                 csHasher.update(buff);
             }
             opPromises = [];
 
         }
-        await endWriteSection(fdZKey);
+        await chunkFileUtils.endWriteSectionFile(fdSection);
 
     }
 

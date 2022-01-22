@@ -18,32 +18,31 @@
 */
 
 import * as binFileUtils from "@iden3/binfileutils";
+import * as chunkFileUtils from "./chunk_utils.js";
 import * as zkeyUtils from "./zkey_utils.js";
 import { getCurveFromQ as getCurve } from "./curves.js";
 import { utils } from "ffjavascript";
 const {stringifyBigInts} = utils;
 
 export default async function zkeyExportVerificationKey(zkeyName, /* logger */ ) {
+    const maxZKeyVersion = 2;
 
-    const {fd, sections} = await binFileUtils.readBinFile(zkeyName, "zkey", 2);
-    const zkey = await zkeyUtils.readHeader(fd, sections);
+    const zkey = await zkeyUtils.readHeader(zkeyName, maxZKeyVersion);
 
     let res;
     if (zkey.protocol == "groth16") {
-        res = await groth16Vk(zkey, fd, sections);
+        res = await groth16Vk(zkey, zkeyName, maxZKeyVersion);
     } else if (zkey.protocol == "plonk") {
         res = await plonkVk(zkey);
     } else {
         throw new Error("zkey file is not groth16");
     }
 
-    await fd.close();
-
     return res;
 }
 
 
-async function groth16Vk(zkey, fd, sections) {
+async function groth16Vk(zkey, zkeyFileName, maxZKeyVersion) {
     const curve = await getCurve(zkey.q);
     const sG1 = curve.G1.F.n8*2;
 
@@ -65,14 +64,14 @@ async function groth16Vk(zkey, fd, sections) {
 
     // Read IC Section
     ///////////
-    await binFileUtils.startReadUniqueSection(fd, sections, 3);
+    const fd3 = await chunkFileUtils.startReadSectionFile(zkeyFileName, 3, maxZKeyVersion);
     vKey.IC = [];
     for (let i=0; i<= zkey.nPublic; i++) {
-        const buff = await fd.read(sG1);
+        const buff = await fd3.read(sG1);
         const P = curve.G1.toObject(buff);
         vKey.IC.push(P);
     }
-    await binFileUtils.endReadSection(fd);
+    await chunkFileUtils.endReadSectionFile(fd3);
 
     vKey = stringifyBigInts(vKey);
 

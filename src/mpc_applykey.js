@@ -18,6 +18,7 @@
 */
 
 import * as binFileUtils from "@iden3/binfileutils";
+import * as chunkFileUtils from "./chunk_utils.js";
 
 /*
     This function creates a new section in the fdTo file with id idSection.
@@ -26,15 +27,15 @@ import * as binFileUtils from "@iden3/binfileutils";
     It also updates the newChallengeHasher with the new points
 */
 
-export async function applyKeyToSection(fdOld, sections, fdNew, idSection, curve, groupName, first, inc, sectionName, logger) {
+export async function applyKeyToSection(zkeyFileNameOld, maxZKeyVersion, zkeyFileNameNew, idSection, curve, groupName, first, inc, sectionName, logger) {
     const MAX_CHUNK_SIZE = 1 << 16;
     const G = curve[groupName];
     const sG = G.F.n8*2;
-    const nPoints = sections[idSection][0].size / sG;
 
-    await binFileUtils.startReadUniqueSection(fdOld, sections,idSection );
-    await binFileUtils.startWriteSection(fdNew, idSection);
+    const fdOld = await chunkFileUtils.startReadSectionFile(zkeyFileNameOld, idSection, maxZKeyVersion);
+    const fdNew = await chunkFileUtils.startWriteSectionFile(zkeyFileNameNew, idSection);
 
+    const nPoints = fdOld.readingSection.size / sG;
     let t = first;
     for (let i=0; i<nPoints; i += MAX_CHUNK_SIZE) {
         if (logger) logger.debug(`Applying key: ${sectionName}: ${i}/${nPoints}`);
@@ -46,8 +47,8 @@ export async function applyKeyToSection(fdOld, sections, fdNew, idSection, curve
         t = curve.Fr.mul(t, curve.Fr.exp(inc, n));
     }
 
-    await binFileUtils.endWriteSection(fdNew);
-    await binFileUtils.endReadSection(fdOld);
+    await chunkFileUtils.endWriteSectionFile(fdNew);
+    await chunkFileUtils.endReadSectionFile(fdOld);
 }
 
 

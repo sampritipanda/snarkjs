@@ -2023,6 +2023,107 @@ async function verify(tauFilename, logger) {
     }
 }
 
+// Each section is its own file.
+
+function sectionName(sectionId) {
+    return String.fromCharCode('a'.charCodeAt(0) + sectionId);
+}
+
+async function startWriteSectionFile(zkeyName, sectionId) {
+	const fd = await binFileUtils__namespace.createBinFile(zkeyName + sectionName(sectionId), "zky" + sectionName(sectionId), 1, 1, 1<<22, 1<<24);
+
+	fd.writingSection = {
+        pSectionSize: fd.pos
+    };
+	await fd.writeULE64(0); // Temporally set to 0 length
+	return fd;
+}
+
+async function endWriteSectionFile(fd) {
+    if (typeof fd.writingSection === "undefined") throw new Error("Not writing a section");
+
+    const sectionSize = fd.pos - fd.writingSection.pSectionSize - 8;
+    const oldPos = fd.pos;
+    fd.pos = fd.writingSection.pSectionSize;
+    await fd.writeULE64(sectionSize);
+    fd.pos = oldPos;
+    await fd.close();
+    delete fd.writingSection;
+}
+
+async function startReadSectionFile(zkeyName, sectionId, maxVersion) {
+	const fileName = zkeyName + sectionName(sectionId);
+	const type = "zky" + sectionName(sectionId);
+    const fd = await fastFile__namespace.readExisting(fileName);
+
+    const b = await fd.read(4);
+    let readedType = "";
+    for (let i=0; i<4; i++) readedType += String.fromCharCode(b[i]);
+
+    if (readedType != type) throw new Error(fileName + ": Invalid File format");
+
+    let v = await fd.readULE32();
+
+    if (v>maxVersion) throw new Error("Version not supported");
+
+    let nSections = await fd.readULE32();
+    if (nSections != 1) throw new Error("More than one section found");
+
+    let size = await fd.readULE64();
+    fd.readingSection = {
+    	size: size,
+    	p: fd.pos,
+    };
+    return fd;
+}
+
+async function endReadSectionFile(fd, noCheck) {
+    if (typeof fd.readingSection === "undefined") throw new Error("Not reading a section");
+    if (!noCheck) {
+        if (fd.pos-fd.readingSection.p !=  fd.readingSection.size) throw new Error("Invalid section size reading");
+    }
+    await fd.close();
+    delete fd.readingSection;
+}
+
+async function readSectionFile(zkeyName, sectionId, maxVersion) {
+	const fd = await startReadSectionFile(zkeyName, sectionId, maxVersion);
+    let buff;
+    if (fd.readingSection.size < (1 << 30) ) {
+        buff = new Uint8Array(fd.readingSection.size);
+    } else {
+        buff = new ffjavascript.BigBuffer(fd.readingSection.size);
+    }
+
+    await fd.readToBuffer(buff, 0, fd.readingSection.size, fd.pos);
+    await endReadSectionFile(fd);
+    return buff;
+}
+
+async function copySectionFile(zkeyNameOld, zkeyNameNew, sectionId) {
+    await fs__default["default"].copyFile(zkeyNameOld + sectionName(sectionId), zkeyNameNew + sectionName(sectionId), (err) => {
+        if (err) throw err;
+    });
+}
+
+async function sectionFileIsEqual(zkeyNameOld, zkeyNameNew, sectionId, maxVersion) {
+    const fdOld = await startReadSectionFile(zkeyNameOld, sectionId, maxVersion);
+    const fdNew = await startReadSectionFile(zkeyNameNew, sectionId, maxVersion);
+
+    const MAX_BUFF_SIZE = fdOld.pageSize * 16;
+    if (fdOld.readingSection.size != fdNew.readingSection.size) return false;
+    const totalBytes=fdOld.readingSection.size;
+    for (let i=0; i<totalBytes; i+= MAX_BUFF_SIZE) {
+        const n = Math.min(totalBytes-i, MAX_BUFF_SIZE);
+        const buff1 = await fdOld.read(n);
+        const buff2 = await fdNew.read(n);
+        for (let j=0; j<n; j++) if (buff1[j] != buff2[j]) return false;
+    }
+    await endReadSectionFile(fdOld);
+    await endReadSectionFile(fdNew);
+    return true;
+}
+
 /*
     Copyright 2018 0KIMS association.
 
@@ -2049,15 +2150,15 @@ async function verify(tauFilename, logger) {
     It also updates the newChallengeHasher with the new points
 */
 
-async function applyKeyToSection(fdOld, sections, fdNew, idSection, curve, groupName, first, inc, sectionName, logger) {
+async function applyKeyToSection(zkeyFileNameOld, maxZKeyVersion, zkeyFileNameNew, idSection, curve, groupName, first, inc, sectionName, logger) {
     const MAX_CHUNK_SIZE = 1 << 16;
     const G = curve[groupName];
     const sG = G.F.n8*2;
-    const nPoints = sections[idSection][0].size / sG;
 
-    await binFileUtils__namespace.startReadUniqueSection(fdOld, sections,idSection );
-    await binFileUtils__namespace.startWriteSection(fdNew, idSection);
+    const fdOld = await startReadSectionFile(zkeyFileNameOld, idSection, maxZKeyVersion);
+    const fdNew = await startWriteSectionFile(zkeyFileNameNew, idSection);
 
+    const nPoints = fdOld.readingSection.size / sG;
     let t = first;
     for (let i=0; i<nPoints; i += MAX_CHUNK_SIZE) {
         if (logger) logger.debug(`Applying key: ${sectionName}: ${i}/${nPoints}`);
@@ -2069,8 +2170,8 @@ async function applyKeyToSection(fdOld, sections, fdNew, idSection, curve, group
         t = curve.Fr.mul(t, curve.Fr.exp(inc, n));
     }
 
-    await binFileUtils__namespace.endWriteSection(fdNew);
-    await binFileUtils__namespace.endReadSection(fdOld);
+    await endWriteSectionFile(fdNew);
+    await endReadSectionFile(fdOld);
 }
 
 
@@ -3114,8 +3215,6 @@ async function newZKey(r1csName, ptauName, zkeyName, logger) {
     const {fd: fdR1cs, sections: sectionsR1cs} = await binFileUtils.readBinFile(r1csName, "r1cs", 1, 1<<22, 1<<24);
     const r1cs = await r1csfile.readR1csHeader(fdR1cs, sectionsR1cs, false);
 
-    const fdZKey = await binFileUtils.createBinFile(zkeyName, "zkey", 1, 10, 1<<22, 1<<24);
-
     const sG1 = curve.G1.F.n8*2;
     const sG2 = curve.G2.F.n8*2;
 
@@ -3141,14 +3240,14 @@ async function newZKey(r1csName, ptauName, zkeyName, logger) {
 
     // Write the header
     ///////////
-    await binFileUtils.startWriteSection(fdZKey, 1);
-    await fdZKey.writeULE32(1); // Groth
-    await binFileUtils.endWriteSection(fdZKey);
+    const fdSection1 = await startWriteSectionFile(zkeyName, 1);
+    await fdSection1.writeULE32(1); // Groth
+    await endWriteSectionFile(fdSection1);
+
 
     // Write the Groth header section
     ///////////
-
-    await binFileUtils.startWriteSection(fdZKey, 2);
+    const fdSection2 = await startWriteSectionFile(zkeyName, 2);
     const primeQ = curve.q;
     const n8q = (Math.floor( (ffjavascript.Scalar.bitLength(primeQ) - 1) / 64) +1)*8;
 
@@ -3157,29 +3256,29 @@ async function newZKey(r1csName, ptauName, zkeyName, logger) {
     const Rr = ffjavascript.Scalar.mod(ffjavascript.Scalar.shl(1, n8r*8), primeR);
     const R2r = curve.Fr.e(ffjavascript.Scalar.mod(ffjavascript.Scalar.mul(Rr,Rr), primeR));
 
-    await fdZKey.writeULE32(n8q);
-    await binFileUtils.writeBigInt(fdZKey, primeQ, n8q);
-    await fdZKey.writeULE32(n8r);
-    await binFileUtils.writeBigInt(fdZKey, primeR, n8r);
-    await fdZKey.writeULE32(r1cs.nVars);                         // Total number of bars
-    await fdZKey.writeULE32(nPublic);                       // Total number of public vars (not including ONE)
-    await fdZKey.writeULE32(domainSize);                  // domainSize
+    await fdSection2.writeULE32(n8q);
+    await binFileUtils.writeBigInt(fdSection2, primeQ, n8q);
+    await fdSection2.writeULE32(n8r);
+    await binFileUtils.writeBigInt(fdSection2, primeR, n8r);
+    await fdSection2.writeULE32(r1cs.nVars);                         // Total number of bars
+    await fdSection2.writeULE32(nPublic);                       // Total number of public vars (not including ONE)
+    await fdSection2.writeULE32(domainSize);                  // domainSize
 
     let bAlpha1;
     bAlpha1 = await fdPTau.read(sG1, sectionsPTau[4][0].p);
-    await fdZKey.write(bAlpha1);
+    await fdSection2.write(bAlpha1);
     bAlpha1 = await curve.G1.batchLEMtoU(bAlpha1);
     csHasher.update(bAlpha1);
 
     let bBeta1;
     bBeta1 = await fdPTau.read(sG1, sectionsPTau[5][0].p);
-    await fdZKey.write(bBeta1);
+    await fdSection2.write(bBeta1);
     bBeta1 = await curve.G1.batchLEMtoU(bBeta1);
     csHasher.update(bBeta1);
 
     let bBeta2;
     bBeta2 = await fdPTau.read(sG2, sectionsPTau[6][0].p);
-    await fdZKey.write(bBeta2);
+    await fdSection2.write(bBeta2);
     bBeta2 = await curve.G2.batchLEMtoU(bBeta2);
     csHasher.update(bBeta2);
 
@@ -3192,13 +3291,13 @@ async function newZKey(r1csName, ptauName, zkeyName, logger) {
     const bg2U = new Uint8Array(sG2);
     curve.G2.toRprUncompressed(bg2U, 0, curve.G2.g);
 
-    await fdZKey.write(bg2);        // gamma2
-    await fdZKey.write(bg1);        // delta1
-    await fdZKey.write(bg2);        // delta2
+    await fdSection2.write(bg2);        // gamma2
+    await fdSection2.write(bg1);        // delta1
+    await fdSection2.write(bg2);        // delta2
     csHasher.update(bg2U);      // gamma2
     csHasher.update(bg1U);      // delta1
     csHasher.update(bg2U);      // delta2
-    await binFileUtils.endWriteSection(fdZKey);
+    await endWriteSectionFile(fdSection2);
 
     if (logger) logger.info("Reading r1cs");
     let sR1cs = await binFileUtils.readSection(fdR1cs, sectionsR1cs, 2);
@@ -3233,22 +3332,20 @@ async function newZKey(r1csName, ptauName, zkeyName, logger) {
 
     const csHash = csHasher.digest();
     // Contributions section
-    await binFileUtils.startWriteSection(fdZKey, 10);
-    await fdZKey.write(csHash);
-    await fdZKey.writeULE32(0);
-    await binFileUtils.endWriteSection(fdZKey);
+    const fdSection10 = await startWriteSectionFile(zkeyName, 10);
+    await fdSection10.write(csHash);
+    await fdSection10.writeULE32(0);
+    await endWriteSectionFile(fdSection10);
 
     if (logger) logger.info(formatHash(csHash, "Circuit hash: "));
 
 
-    await fdZKey.close();
     await fdR1cs.close();
     await fdPTau.close();
 
     return csHash;
 
     async function writeHs() {
-        await binFileUtils.startWriteSection(fdZKey, 9);
         const buffOut = new ffjavascript.BigBuffer(domainSize*sG1);
         if (cirPower < curve.Fr.s) {
             let sTauG1 = await binFileUtils.readSection(fdPTau, sectionsPTau, 12, (domainSize*2-1)*sG1, domainSize*2*sG1);
@@ -3264,8 +3361,9 @@ async function newZKey(r1csName, ptauName, zkeyName, logger) {
             if (logger) logger.error("Circuit too big");
             throw new Error("Circuit too big for this curve");
         }
-        await fdZKey.write(buffOut);
-        await binFileUtils.endWriteSection(fdZKey);
+        const fdSection9 = await startWriteSectionFile(zkeyName, 9);
+        await fdSection9.write(buffOut);
+        await endWriteSectionFile(fdSection9);
     }
 
     async function processConstraints() {
@@ -3367,9 +3465,6 @@ async function newZKey(r1csName, ptauName, zkeyName, logger) {
             coefs.push([0, r1cs.nConstraints + s, s, -1]);
         }
 
-
-        await binFileUtils.startWriteSection(fdZKey, 4);
-
         const buffSection = new ffjavascript.BigBuffer(coefs.length*(12+curve.Fr.n8) + 4);
 
         const buff4 = new Uint8Array(4);
@@ -3382,8 +3477,9 @@ async function newZKey(r1csName, ptauName, zkeyName, logger) {
             writeCoef(coefs[i]);
         }
 
-        await fdZKey.write(buffSection);
-        await binFileUtils.endWriteSection(fdZKey);
+        const fdSection4 = await startWriteSectionFile(zkeyName, 4);
+        await fdSection4.write(buffSection);
+        await endWriteSectionFile(fdSection4);
 
         function writeCoef(c) {
             buffCoeffV.setUint32(0, c[0], true);
@@ -3408,7 +3504,7 @@ async function newZKey(r1csName, ptauName, zkeyName, logger) {
         const G = curve[groupName];
 
         hashU32(arr.length);
-        await binFileUtils.startWriteSection(fdZKey, idSection);
+        const fdSection = await startWriteSectionFile(zkeyName, idSection);
 
         let opPromises = [];
 
@@ -3437,14 +3533,14 @@ async function newZKey(r1csName, ptauName, zkeyName, logger) {
             const result = await Promise.all(opPromises);
 
             for (let k=0; k<result.length; k++) {
-                await fdZKey.write(result[k][0]);
+                await fdSection.write(result[k][0]);
                 const buff = await G.batchLEMtoU(result[k][0]);
                 csHasher.update(buff);
             }
             opPromises = [];
 
         }
-        await binFileUtils.endWriteSection(fdZKey);
+        await endWriteSectionFile(fdSection);
 
     }
 
@@ -3672,43 +3768,41 @@ async function newZKey(r1csName, ptauName, zkeyName, logger) {
     along with snarkJS. If not, see <https://www.gnu.org/licenses/>.
 */
 
-async function writeHeader(fd, zkey) {
+async function writeHeader(zkeyName, zkey) {
 
     // Write the header
     ///////////
-    await binFileUtils__namespace.startWriteSection(fd, 1);
-    await fd.writeULE32(1); // Groth
-    await binFileUtils__namespace.endWriteSection(fd);
+    const fdSection1 = await startWriteSectionFile(zkeyName, 1);
+    await fdSection1.writeULE32(1); // Groth
+    await endWriteSectionFile(fdSection1);
 
     // Write the Groth header section
     ///////////
 
     const curve = await getCurveFromQ(zkey.q);
 
-    await binFileUtils__namespace.startWriteSection(fd, 2);
+    const fdSection2 = await startWriteSectionFile(zkeyName, 2);
     const primeQ = curve.q;
     const n8q = (Math.floor( (ffjavascript.Scalar.bitLength(primeQ) - 1) / 64) +1)*8;
 
     const primeR = curve.r;
     const n8r = (Math.floor( (ffjavascript.Scalar.bitLength(primeR) - 1) / 64) +1)*8;
 
-    await fd.writeULE32(n8q);
-    await binFileUtils__namespace.writeBigInt(fd, primeQ, n8q);
-    await fd.writeULE32(n8r);
-    await binFileUtils__namespace.writeBigInt(fd, primeR, n8r);
-    await fd.writeULE32(zkey.nVars);                         // Total number of bars
-    await fd.writeULE32(zkey.nPublic);                       // Total number of public vars (not including ONE)
-    await fd.writeULE32(zkey.domainSize);                  // domainSize
-    await writeG1(fd, curve, zkey.vk_alpha_1);
-    await writeG1(fd, curve, zkey.vk_beta_1);
-    await writeG2(fd, curve, zkey.vk_beta_2);
-    await writeG2(fd, curve, zkey.vk_gamma_2);
-    await writeG1(fd, curve, zkey.vk_delta_1);
-    await writeG2(fd, curve, zkey.vk_delta_2);
+    await fdSection2.writeULE32(n8q);
+    await binFileUtils__namespace.writeBigInt(fdSection2, primeQ, n8q);
+    await fdSection2.writeULE32(n8r);
+    await binFileUtils__namespace.writeBigInt(fdSection2, primeR, n8r);
+    await fdSection2.writeULE32(zkey.nVars);                         // Total number of bars
+    await fdSection2.writeULE32(zkey.nPublic);                       // Total number of public vars (not including ONE)
+    await fdSection2.writeULE32(zkey.domainSize);                  // domainSize
+    await writeG1(fdSection2, curve, zkey.vk_alpha_1);
+    await writeG1(fdSection2, curve, zkey.vk_beta_1);
+    await writeG2(fdSection2, curve, zkey.vk_beta_2);
+    await writeG2(fdSection2, curve, zkey.vk_gamma_2);
+    await writeG1(fdSection2, curve, zkey.vk_delta_1);
+    await writeG2(fdSection2, curve, zkey.vk_delta_2);
 
-    await binFileUtils__namespace.endWriteSection(fd);
-
-
+    await endWriteSectionFile(fdSection2);
 }
 
 async function writeG1(fd, curve, p) {
@@ -3736,17 +3830,15 @@ async function readG2(fd, curve, toObject) {
 }
 
 
-async function readHeader$1(fd, sections, toObject) {
+async function readHeader$1(zkeyFileName, maxZKeyVersion) {
     // Read Header
     /////////////////////
-    await binFileUtils__namespace.startReadUniqueSection(fd, sections, 1);
+    const fd = await startReadSectionFile(zkeyFileName, 1, maxZKeyVersion);
     const protocolId = await fd.readULE32();
-    await binFileUtils__namespace.endReadSection(fd);
+    await endReadSectionFile(fd);
 
     if (protocolId == 1) {
-        return await readHeaderGroth16(fd, sections, toObject);
-    } else if (protocolId == 2) {
-        return await readHeaderPlonk(fd, sections);
+        return await readHeaderGroth16(zkeyFileName, maxZKeyVersion);
     } else {
         throw new Error("Protocol not supported: ");
     }        
@@ -3755,14 +3847,14 @@ async function readHeader$1(fd, sections, toObject) {
 
 
 
-async function readHeaderGroth16(fd, sections, toObject) {
+async function readHeaderGroth16(zkeyFileName, maxZKeyVersion, toObject) {
     const zkey = {};
 
     zkey.protocol = "groth16";
 
     // Read Groth Header
     /////////////////////
-    await binFileUtils__namespace.startReadUniqueSection(fd, sections, 2);
+    const fd = await startReadSectionFile(zkeyFileName, 2, maxZKeyVersion);
     const n8q = await fd.readULE32();
     zkey.n8q = n8q;
     zkey.q = await binFileUtils__namespace.readBigInt(fd, n8q);
@@ -3783,61 +3875,25 @@ async function readHeaderGroth16(fd, sections, toObject) {
     zkey.vk_gamma_2 = await readG2(fd, curve, toObject);
     zkey.vk_delta_1 = await readG1(fd, curve, toObject);
     zkey.vk_delta_2 = await readG2(fd, curve, toObject);
-    await binFileUtils__namespace.endReadSection(fd);
-
-    return zkey;
-
-}
-
-
-
-
-async function readHeaderPlonk(fd, sections, protocol, toObject) {
-    const zkey = {};
-
-    zkey.protocol = "plonk";
-
-    // Read Plonk Header
-    /////////////////////
-    await binFileUtils__namespace.startReadUniqueSection(fd, sections, 2);
-    const n8q = await fd.readULE32();
-    zkey.n8q = n8q;
-    zkey.q = await binFileUtils__namespace.readBigInt(fd, n8q);
-
-    const n8r = await fd.readULE32();
-    zkey.n8r = n8r;
-    zkey.r = await binFileUtils__namespace.readBigInt(fd, n8r);
-
-    let curve = await getCurveFromQ(zkey.q);
-
-    zkey.nVars = await fd.readULE32();
-    zkey.nPublic = await fd.readULE32();
-    zkey.domainSize = await fd.readULE32();
-    zkey.power = log2(zkey.domainSize);
-    zkey.nAdditions = await fd.readULE32();
-    zkey.nConstrains = await fd.readULE32();
-    zkey.k1 = await fd.read(n8r);
-    zkey.k2 = await fd.read(n8r);
-
-    zkey.Qm = await readG1(fd, curve, toObject);
-    zkey.Ql = await readG1(fd, curve, toObject);
-    zkey.Qr = await readG1(fd, curve, toObject);
-    zkey.Qo = await readG1(fd, curve, toObject);
-    zkey.Qc = await readG1(fd, curve, toObject);
-    zkey.S1 = await readG1(fd, curve, toObject);
-    zkey.S2 = await readG1(fd, curve, toObject);
-    zkey.S3 = await readG1(fd, curve, toObject);
-    zkey.X_2 = await readG2(fd, curve, toObject);
-
-    await binFileUtils__namespace.endReadSection(fd);
+    await endReadSectionFile(fd);
 
     return zkey;
 }
 
 async function readZKey(fileName, toObject) {
-    const {fd, sections} = await binFileUtils__namespace.readBinFile(fileName, "zkey", 1);
+    const maxZKeyVersion = 2;
+    // const {fd, sections} = await binFileUtils.readBinFile(fileName, "zkey", 1);
 
-    const zkey = await readHeader$1(fd, sections, "groth16");
+    const zkey = await zkeyUtils.readHeader(zkeyFileName, maxZKeyVersion);
+
+    if (zkey.protocol != "groth16") {
+        throw new Error("zkey file is not groth16");
+    }
+
+    // const fd = await chunkFileUtils.startReadSectionFile(zkeyFileName, 1, maxZKeyVersion);
+    // const protocolId = await fd.readULE32();
+    // await chunkFileUtils.endReadSectionFile(fd);
+
 
     const Fr = new ffjavascript.F1Field(zkey.r);
     const Rr = ffjavascript.Scalar.mod(ffjavascript.Scalar.shl(1, zkey.n8r*8), zkey.r);
@@ -3848,25 +3904,24 @@ async function readZKey(fileName, toObject) {
 
     // Read IC Section
     ///////////
-    await binFileUtils__namespace.startReadUniqueSection(fd, sections, 3);
+    const fd3 = await startReadSectionFile(zkeyFileName, 3, maxZKeyVersion);
     zkey.IC = [];
     for (let i=0; i<= zkey.nPublic; i++) {
-        const P = await readG1(fd, curve, toObject);
+        const P = await readG1(fd3, curve, toObject);
         zkey.IC.push(P);
     }
-    await binFileUtils__namespace.endReadSection(fd);
-
+    await endReadSectionFile(fd3);
 
     // Read Coefs
     ///////////
-    await binFileUtils__namespace.startReadUniqueSection(fd, sections, 4);
-    const nCCoefs = await fd.readULE32();
+    const fd4 = await startReadSectionFile(zkeyFileName, 4, maxZKeyVersion);
+    const nCCoefs = await fd4.readULE32();
     zkey.ccoefs = [];
     for (let i=0; i<nCCoefs; i++) {
-        const m = await fd.readULE32();
-        const c = await fd.readULE32();
-        const s = await fd.readULE32();
-        const v = await readFr2();
+        const m = await fd4.readULE32();
+        const c = await fd4.readULE32();
+        const s = await fd4.readULE32();
+        const v = await readFr2(fd4);
         zkey.ccoefs.push({
             matrix: m,
             constraint: c,
@@ -3874,69 +3929,67 @@ async function readZKey(fileName, toObject) {
             value: v
         });
     }
-    await binFileUtils__namespace.endReadSection(fd);
+    await endReadSectionFile(fd4);
 
     // Read A points
     ///////////
-    await binFileUtils__namespace.startReadUniqueSection(fd, sections, 5);
+    const fd5 = await startReadSectionFile(zkeyFileName, 5, maxZKeyVersion);
     zkey.A = [];
     for (let i=0; i<zkey.nVars; i++) {
-        const A = await readG1(fd, curve, toObject);
+        const A = await readG1(fd5, curve, toObject);
         zkey.A[i] = A;
     }
-    await binFileUtils__namespace.endReadSection(fd);
+    await endReadSectionFile(fd5);
 
 
     // Read B1
     ///////////
-    await binFileUtils__namespace.startReadUniqueSection(fd, sections, 6);
+    const fd6 = await startReadSectionFile(zkeyFileName, 6, maxZKeyVersion);
     zkey.B1 = [];
     for (let i=0; i<zkey.nVars; i++) {
-        const B1 = await readG1(fd, curve, toObject);
+        const B1 = await readG1(fd6, curve, toObject);
 
         zkey.B1[i] = B1;
     }
-    await binFileUtils__namespace.endReadSection(fd);
+    await endReadSectionFile(fd6);
 
 
     // Read B2 points
     ///////////
-    await binFileUtils__namespace.startReadUniqueSection(fd, sections, 7);
+    const fd7 = await startReadSectionFile(zkeyFileName, 7, maxZKeyVersion);
     zkey.B2 = [];
     for (let i=0; i<zkey.nVars; i++) {
-        const B2 = await readG2(fd, curve, toObject);
+        const B2 = await readG2(fd7, curve, toObject);
         zkey.B2[i] = B2;
     }
-    await binFileUtils__namespace.endReadSection(fd);
+    await endReadSectionFile(fd7);
 
 
     // Read C points
     ///////////
-    await binFileUtils__namespace.startReadUniqueSection(fd, sections, 8);
+    const fd8 = await startReadSectionFile(zkeyFileName, 8, maxZKeyVersion);
     zkey.C = [];
     for (let i=zkey.nPublic+1; i<zkey.nVars; i++) {
-        const C = await readG1(fd, curve, toObject);
+        const C = await readG1(fd8, curve, toObject);
 
         zkey.C[i] = C;
     }
-    await binFileUtils__namespace.endReadSection(fd);
+    await endReadSectionFile(fd8);
 
 
     // Read H points
     ///////////
-    await binFileUtils__namespace.startReadUniqueSection(fd, sections, 9);
+    const fd9 = await startReadSectionFile(zkeyFileName, 9, maxZKeyVersion);
     zkey.hExps = [];
     for (let i=0; i<zkey.domainSize; i++) {
-        const H = await readG1(fd, curve, toObject);
+        const H = await readG1(fd9, curve, toObject);
         zkey.hExps.push(H);
     }
-    await binFileUtils__namespace.endReadSection(fd);
-
-    await fd.close();
+    await endReadSectionFile(fd9);
 
     return zkey;
 
-    async function readFr2(/* toObject */) {
+    async function readFr2(fd, toObject) {
         const n = await binFileUtils__namespace.readBigInt(fd, zkey.n8r);
         return Fr.mul(n, Rri2);
     }
@@ -3982,8 +4035,8 @@ async function readContribution(fd, curve, toObject) {
 }
 
 
-async function readMPCParams(fd, curve, sections) {
-    await binFileUtils__namespace.startReadUniqueSection(fd, sections, 10);
+async function readMPCParams(zkeyFileName, maxZKeyVersion, curve) {
+    const fd = await startReadSectionFile(zkeyFileName, 10, maxZKeyVersion);
     const res = { contributions: []};
     res.csHash = await fd.read(64);
     const n = await fd.readULE32();
@@ -3991,7 +4044,7 @@ async function readMPCParams(fd, curve, sections) {
         const c = await readContribution(fd, curve);
         res.contributions.push(c);
     }
-    await binFileUtils__namespace.endReadSection(fd);
+    await endReadSectionFile(fd);
 
     return res;
 }
@@ -4029,14 +4082,14 @@ async function writeContribution(fd, curve, c) {
 
 }
 
-async function writeMPCParams(fd, curve, mpcParams) {
-    await binFileUtils__namespace.startWriteSection(fd, 10);
+async function writeMPCParams(zkeyName, curve, mpcParams) {
+    const fd = await startWriteSectionFile(zkeyName, 10);
     await fd.write(mpcParams.csHash);
     await fd.writeULE32(mpcParams.contributions.length);
     for (let i=0; i<mpcParams.contributions.length; i++) {
         await writeContribution(fd, curve,mpcParams.contributions[i]);
     }
-    await binFileUtils__namespace.endWriteSection(fd);
+    await endWriteSectionFile(fd);
 }
 
 function hashG1(hasher, curve, p) {
@@ -4215,7 +4268,7 @@ async function phase2exportMPCParams(zkeyName, mpcparamsName, logger) {
 async function phase2importMPCParams(zkeyNameOld, mpcparamsName, zkeyNameNew, name, logger) {
 
     const {fd: fdZKeyOld, sections: sectionsZKeyOld} = await binFileUtils__namespace.readBinFile(zkeyNameOld, "zkey", 2);
-    const zkeyHeader = await readHeader$1(fdZKeyOld, sectionsZKeyOld, false);
+    const zkeyHeader = await readHeader$1(fdZKeyOld, sectionsZKeyOld);
     if (zkeyHeader.protocol != "groth16") {
         throw new Error("zkey file is not groth16");
     }
@@ -4434,9 +4487,9 @@ async function phase2verifyFromInit(initFileName, pTauFileName, zkeyFileName, lo
 
     let sr;
     await Blake2b__default["default"].ready();
+    const maxZKeyVersion = 2;
 
-    const {fd, sections} = await binFileUtils__namespace.readBinFile(zkeyFileName, "zkey", 2);
-    const zkey = await readHeader$1(fd, sections, false);
+    const zkey = await readHeader$1(zkeyFileName, maxZKeyVersion);
     if (zkey.protocol != "groth16") {
         throw new Error("zkey file is not groth16");
     }
@@ -4444,7 +4497,7 @@ async function phase2verifyFromInit(initFileName, pTauFileName, zkeyFileName, lo
     const curve = await getCurveFromQ(zkey.q);
     const sG1 = curve.G1.F.n8*2;
 
-    const mpcParams = await readMPCParams(fd, curve, sections);
+    const mpcParams = await readMPCParams(zkeyFileName, maxZKeyVersion, curve);
 
     const accumulatedHasher = Blake2b__default["default"](64);
     accumulatedHasher.update(mpcParams.csHash);
@@ -4501,8 +4554,7 @@ async function phase2verifyFromInit(initFileName, pTauFileName, zkeyFileName, lo
     }
 
 
-    const {fd: fdInit, sections: sectionsInit} = await binFileUtils__namespace.readBinFile(initFileName, "zkey", 2);
-    const zkeyInit = await readHeader$1(fdInit, sectionsInit, false);
+    const zkeyInit = await readHeader$1(initFileName, maxZKeyVersion);
 
     if (zkeyInit.protocol != "groth16") {
         throw new Error("zkeyinit file is not groth16");
@@ -4551,56 +4603,45 @@ async function phase2verifyFromInit(initFileName, pTauFileName, zkeyFileName, lo
         return false;
     }
 
-    const mpcParamsInit = await readMPCParams(fdInit, curve, sectionsInit);
+    const mpcParamsInit = await readMPCParams(initFileName, maxZKeyVersion, curve);
     if (!hashIsEqual(mpcParams.csHash, mpcParamsInit.csHash)) {
         if (logger) logger.error("INVALID:  Circuit does not match");
         return false;
     }
 
-    // Check sizes of sections
-    if (sections[8][0].size != sG1*(zkey.nVars-zkey.nPublic-1)) {
-        if (logger) logger.error("INVALID:  Invalid L section size");
-        return false;
-    }
-
-    if (sections[9][0].size != sG1*(zkey.domainSize)) {
-        if (logger) logger.error("INVALID:  Invalid H section size");
-        return false;
-    }
-
     let ss;
-    ss = await binFileUtils__namespace.sectionIsEqual(fd, sections, fdInit, sectionsInit, 3);
+    ss = await sectionFileIsEqual(initFileName, zkeyFileName, 3, maxZKeyVersion);
     if (!ss) {
         if (logger) logger.error("INVALID:  IC section is not identical");
         return false;
     }
 
-    ss = await binFileUtils__namespace.sectionIsEqual(fd, sections, fdInit, sectionsInit, 4);
+    ss = await sectionFileIsEqual(initFileName, zkeyFileName, 4, maxZKeyVersion);
     if (!ss) {
         if (logger) logger.error("Coeffs section is not identical");
         return false;
     }
 
-    ss = await binFileUtils__namespace.sectionIsEqual(fd, sections, fdInit, sectionsInit, 5);
+    ss = await sectionFileIsEqual(initFileName, zkeyFileName, 5, maxZKeyVersion);
     if (!ss) {
         if (logger) logger.error("A section is not identical");
         return false;
     }
 
-    ss = await binFileUtils__namespace.sectionIsEqual(fd, sections, fdInit, sectionsInit, 6);
+    ss = await sectionFileIsEqual(initFileName, zkeyFileName, 6, maxZKeyVersion);
     if (!ss) {
         if (logger) logger.error("B1 section is not identical");
         return false;
     }
 
-    ss = await binFileUtils__namespace.sectionIsEqual(fd, sections, fdInit, sectionsInit, 7);
+    ss = await sectionFileIsEqual(initFileName, zkeyFileName, 7, maxZKeyVersion);
     if (!ss) {
         if (logger) logger.error("B2 section is not identical");
         return false;
     }
 
     // Check L
-    sr = await sectionHasSameRatio("G1", fdInit, sectionsInit, fd, sections, 8, zkey.vk_delta_2, zkeyInit.vk_delta_2, "L section");
+    sr = await sectionHasSameRatio("G1", initFileName, zkeyFileName, maxZKeyVersion, 8, zkey.vk_delta_2, zkeyInit.vk_delta_2, "L section");
     if (sr!==true) {
         if (logger) logger.error("L section does not match");
         return false;
@@ -4614,9 +4655,6 @@ async function phase2verifyFromInit(initFileName, pTauFileName, zkeyFileName, lo
     }
 
     if (logger) logger.info(formatHash(mpcParams.csHash, "Circuit Hash: "));
-
-    await fd.close();
-    await fdInit.close();
 
     for (let i=mpcParams.contributions.length-1; i>=0; i--) {
         const c = mpcParams.contributions[i];
@@ -4634,23 +4672,23 @@ async function phase2verifyFromInit(initFileName, pTauFileName, zkeyFileName, lo
     return true;
 
 
-    async function sectionHasSameRatio(groupName, fd1, sections1, fd2, sections2, idSection, g2sp, g2spx, sectionName) {
+    async function sectionHasSameRatio(groupName, initFileName, zkeyFileName, maxZKeyVersion, idSection, g2sp, g2spx, sectionName) {
         const MAX_CHUNK_SIZE = 1<<20;
         const G = curve[groupName];
         const sG = G.F.n8*2;
-        await binFileUtils__namespace.startReadUniqueSection(fd1, sections1, idSection);
-        await binFileUtils__namespace.startReadUniqueSection(fd2, sections2, idSection);
+        const fdOld = await startReadSectionFile(initFileName, idSection, maxZKeyVersion);
+        const fdNew = await startReadSectionFile(zkeyFileName, idSection, maxZKeyVersion);
 
         let R1 = G.zero;
         let R2 = G.zero;
 
-        const nPoints = sections1[idSection][0].size / sG;
+        const nPoints = fdOld.readingSection.size / sG;
 
         for (let i=0; i<nPoints; i += MAX_CHUNK_SIZE) {
             if (logger) logger.debug(`Same ratio check ${sectionName}:  ${i}/${nPoints}`);
             const n = Math.min(nPoints - i, MAX_CHUNK_SIZE);
-            const bases1 = await fd1.read(n*sG);
-            const bases2 = await fd2.read(n*sG);
+            const bases1 = await fdOld.read(n*sG);
+            const bases2 = await fdNew.read(n*sG);
 
             const scalars = new Uint8Array(4*n);
             crypto__default["default"].randomFillSync(scalars);
@@ -4662,8 +4700,8 @@ async function phase2verifyFromInit(initFileName, pTauFileName, zkeyFileName, lo
             R1 = G.add(R1, r1);
             R2 = G.add(R2, r2);
         }
-        await binFileUtils__namespace.endReadSection(fd1);
-        await binFileUtils__namespace.endReadSection(fd2);
+        await endReadSectionFile(fdOld);
+        await endReadSectionFile(fdNew);
 
         if (nPoints == 0) return true;
 
@@ -4732,7 +4770,8 @@ async function phase2verifyFromInit(initFileName, pTauFileName, zkeyFileName, lo
         buff_r = await Fr.fft(buff_r);
         buff_r = await Fr.batchFromMontgomery(buff_r);
 
-        await binFileUtils__namespace.startReadUniqueSection(fd, sections, 9);
+        const fd = await startReadSectionFile(zkeyFileName, 9, maxZKeyVersion);
+
         let R2 = G.zero;
         for (let i=0; i<zkey.domainSize; i += MAX_CHUNK_SIZE) {
             if (logger) logger.debug(`H Verificaition(lagrange):  ${i}/${zkey.domainSize}`);
@@ -4744,7 +4783,7 @@ async function phase2verifyFromInit(initFileName, pTauFileName, zkeyFileName, lo
 
             R2 = G.add(R2, r);
         }
-        await binFileUtils__namespace.endReadSection(fd);
+        await endReadSectionFile(fd);
 
         sr = await sameRatio(curve, R1, R2, zkey.vk_delta_2, zkeyInit.vk_delta_2);
         if (sr !== true) return false;
@@ -4842,8 +4881,7 @@ async function phase2verifyFromInit(initFileName, pTauFileName, zkeyFileName, lo
 
 async function phase2verifyFromR1cs(r1csFileName, pTauFileName, zkeyFileName, logger) {
 
-    // const initFileName = "~" + zkeyFileName + ".init";
-    const initFileName = {type: "bigMem"};
+    const initFileName = "~" + zkeyFileName + ".init";
     await newZKey(r1csFileName, pTauFileName, initFileName, logger);
 
     return await phase2verifyFromInit(initFileName, pTauFileName, zkeyFileName, logger);
@@ -4992,8 +5030,8 @@ async function beacon(zkeyNameOld, zkeyNameNew, name, beaconHashStr, numIteratio
     }
 
 
-    const {fd: fdOld, sections: sections} = await binFileUtils__namespace.readBinFile(zkeyNameOld, "zkey", 2);
-    const zkey = await readHeader$1(fdOld, sections);
+    const maxZKeyVersion = 2;
+    const zkey = await readHeader$1(zkeyNameOld, maxZKeyVersion);
 
     if (zkey.protocol != "groth16") {
         throw new Error("zkey file is not groth16");
@@ -5002,9 +5040,9 @@ async function beacon(zkeyNameOld, zkeyNameNew, name, beaconHashStr, numIteratio
 
     const curve = await getCurveFromQ(zkey.q);
 
-    const mpcParams = await readMPCParams(fdOld, curve, sections);
+    const mpcParams = await readMPCParams(zkeyNameOld, maxZKeyVersion, curve);
 
-    const fdNew = await binFileUtils__namespace.createBinFile(zkeyNameNew, "zkey", 1, 10);
+    await binFileUtils__namespace.createBinFile(zkeyNameNew, "zkey", 1, 10);
 
     const rng = await rngFromBeaconParams(beaconHash, numIterationsExp);
 
@@ -5038,31 +5076,28 @@ async function beacon(zkeyNameOld, zkeyNameNew, name, beaconHashStr, numIteratio
 
     mpcParams.contributions.push(curContribution);
 
-    await writeHeader(fdNew, zkey);
+    await writeHeader(zkeyNameNew, zkey);
 
     // IC
-    await binFileUtils__namespace.copySection(fdOld, sections, fdNew, 3);
+    await copySectionFile(zkeyNameOld, zkeyNameNew, 3);
 
     // Coeffs (Keep original)
-    await binFileUtils__namespace.copySection(fdOld, sections, fdNew, 4);
+    await copySectionFile(zkeyNameOld, zkeyNameNew, 4);
 
     // A Section
-    await binFileUtils__namespace.copySection(fdOld, sections, fdNew, 5);
+    await copySectionFile(zkeyNameOld, zkeyNameNew, 5);
 
     // B1 Section
-    await binFileUtils__namespace.copySection(fdOld, sections, fdNew, 6);
+    await copySectionFile(zkeyNameOld, zkeyNameNew, 6);
 
     // B2 Section
-    await binFileUtils__namespace.copySection(fdOld, sections, fdNew, 7);
+    await copySectionFile(zkeyNameOld, zkeyNameNew, 7);
 
     const invDelta = curve.Fr.inv(curContribution.delta.prvKey);
-    await applyKeyToSection(fdOld, sections, fdNew, 8, curve, "G1", invDelta, curve.Fr.e(1), "L Section", logger);
-    await applyKeyToSection(fdOld, sections, fdNew, 9, curve, "G1", invDelta, curve.Fr.e(1), "H Section", logger);
+    await applyKeyToSection(zkeyNameOld, maxZKeyVersion, zkeyNameNew, 8, curve, "G1", invDelta, curve.Fr.e(1), "L Section", logger);
+    await applyKeyToSection(zkeyNameOld, maxZKeyVersion, zkeyNameNew, 9, curve, "G1", invDelta, curve.Fr.e(1), "H Section", logger);
 
-    await writeMPCParams(fdNew, curve, mpcParams);
-
-    await fdOld.close();
-    await fdNew.close();
+    await writeMPCParams(zkeyNameNew, curve, mpcParams);
 
     const contributionHasher = Blake2b__default["default"](64);
     hashPubKey(contributionHasher, curve, curContribution);
@@ -5278,26 +5313,24 @@ async function bellmanContribute(curve, challengeFilename, responesFileName, ent
 const {stringifyBigInts: stringifyBigInts$3} = ffjavascript.utils;
 
 async function zkeyExportVerificationKey(zkeyName, /* logger */ ) {
+    const maxZKeyVersion = 2;
 
-    const {fd, sections} = await binFileUtils__namespace.readBinFile(zkeyName, "zkey", 2);
-    const zkey = await readHeader$1(fd, sections);
+    const zkey = await readHeader$1(zkeyName, maxZKeyVersion);
 
     let res;
     if (zkey.protocol == "groth16") {
-        res = await groth16Vk(zkey, fd, sections);
+        res = await groth16Vk(zkey, zkeyName, maxZKeyVersion);
     } else if (zkey.protocol == "plonk") {
         res = await plonkVk(zkey);
     } else {
         throw new Error("zkey file is not groth16");
     }
 
-    await fd.close();
-
     return res;
 }
 
 
-async function groth16Vk(zkey, fd, sections) {
+async function groth16Vk(zkey, zkeyFileName, maxZKeyVersion) {
     const curve = await getCurveFromQ(zkey.q);
     const sG1 = curve.G1.F.n8*2;
 
@@ -5319,14 +5352,14 @@ async function groth16Vk(zkey, fd, sections) {
 
     // Read IC Section
     ///////////
-    await binFileUtils__namespace.startReadUniqueSection(fd, sections, 3);
+    const fd3 = await startReadSectionFile(zkeyFileName, 3, maxZKeyVersion);
     vKey.IC = [];
     for (let i=0; i<= zkey.nPublic; i++) {
-        const buff = await fd.read(sG1);
+        const buff = await fd3.read(sG1);
         const P = curve.G1.toObject(buff);
         vKey.IC.push(P);
     }
-    await binFileUtils__namespace.endReadSection(fd);
+    await endReadSectionFile(fd3);
 
     vKey = stringifyBigInts$3(vKey);
 
@@ -5492,9 +5525,9 @@ async function groth16Prove$1(zkeyFileName, witnessFileName, logger) {
 
     const wtns = await readHeader(fdWtns, sectionsWtns);
 
-    const {fd: fdZKey, sections: sectionsZKey} = await binFileUtils__namespace.readBinFile(zkeyFileName, "zkey", 2, 1<<25, 1<<23);
+    const maxZKeyVersion = 2;
 
-    const zkey = await readHeader$1(fdZKey, sectionsZKey);
+    const zkey = await readHeader$1(zkeyFileName, maxZKeyVersion);
 
     if (zkey.protocol != "groth16") {
         throw new Error("zkey file is not groth16");
@@ -5518,10 +5551,10 @@ async function groth16Prove$1(zkeyFileName, witnessFileName, logger) {
     if (logger) logger.debug("Reading Wtns");
     const buffWitness = await binFileUtils__namespace.readSection(fdWtns, sectionsWtns, 2);
     if (logger) logger.debug("Reading Coeffs");
-    const buffCoeffs = await binFileUtils__namespace.readSection(fdZKey, sectionsZKey, 4);
+    const buffCoeffs = await readSectionFile(zkeyFileName, 4, maxZKeyVersion);
 
     if (logger) logger.debug("Building ABC");
-    const [buffA_T, buffB_T, buffC_T] = await buldABC1(curve, zkey, buffWitness, buffCoeffs, logger);
+    const [buffA_T, buffB_T, buffC_T] = await buildABC1(curve, zkey, buffWitness, buffCoeffs, logger);
 
     const inc = power == Fr.s ? curve.Fr.shift : curve.Fr.w[power+1];
 
@@ -5543,23 +5576,23 @@ async function groth16Prove$1(zkeyFileName, witnessFileName, logger) {
     let proof = {};
 
     if (logger) logger.debug("Reading A Points");
-    const buffBasesA = await binFileUtils__namespace.readSection(fdZKey, sectionsZKey, 5);
+    const buffBasesA = await readSectionFile(zkeyFileName, 5, maxZKeyVersion);
     proof.pi_a = await curve.G1.multiExpAffine(buffBasesA, buffWitness, logger, "multiexp A");
 
     if (logger) logger.debug("Reading B1 Points");
-    const buffBasesB1 = await binFileUtils__namespace.readSection(fdZKey, sectionsZKey, 6);
+    const buffBasesB1 = await readSectionFile(zkeyFileName, 6, maxZKeyVersion);
     let pib1 = await curve.G1.multiExpAffine(buffBasesB1, buffWitness, logger, "multiexp B1");
 
     if (logger) logger.debug("Reading B2 Points");
-    const buffBasesB2 = await binFileUtils__namespace.readSection(fdZKey, sectionsZKey, 7);
+    const buffBasesB2 = await readSectionFile(zkeyFileName, 7, maxZKeyVersion);
     proof.pi_b = await curve.G2.multiExpAffine(buffBasesB2, buffWitness, logger, "multiexp B2");
 
     if (logger) logger.debug("Reading C Points");
-    const buffBasesC = await binFileUtils__namespace.readSection(fdZKey, sectionsZKey, 8);
+    const buffBasesC = await readSectionFile(zkeyFileName, 8, maxZKeyVersion);
     proof.pi_c = await curve.G1.multiExpAffine(buffBasesC, buffWitness.slice((zkey.nPublic+1)*curve.Fr.n8), logger, "multiexp C");
 
     if (logger) logger.debug("Reading H Points");
-    const buffBasesH = await binFileUtils__namespace.readSection(fdZKey, sectionsZKey, 9);
+    const buffBasesH = await readSectionFile(zkeyFileName, 9, maxZKeyVersion);
     const resH = await curve.G1.multiExpAffine(buffBasesH, buffPodd_T, logger, "multiexp H");
 
     const r = curve.Fr.random();
@@ -5596,7 +5629,6 @@ async function groth16Prove$1(zkeyFileName, witnessFileName, logger) {
     proof.protocol = "groth16";
     proof.curve = curve.name;
 
-    await fdZKey.close();
     await fdWtns.close();
 
     proof = stringifyBigInts$2(proof);
@@ -5606,7 +5638,7 @@ async function groth16Prove$1(zkeyFileName, witnessFileName, logger) {
 }
 
 
-async function buldABC1(curve, zkey, witness, coeffs, logger) {
+async function buildABC1(curve, zkey, witness, coeffs, logger) {
     const n8 = curve.Fr.n8;
     const sCoef = 4*3 + zkey.n8r;
     const nCoef = (coeffs.byteLength-4) / sCoef;
@@ -5861,13 +5893,21 @@ async function wtnsCalculate$1(input, wasmFileName, wtnsFileName, options) {
     await fdWasm.close();
 
     const wc = await circom_runtime.WitnessCalculatorBuilder(wasm);
-    const w = await wc.calculateBinWitness(input);
+    if (wc.circom_version() == 1) {
+        const w = await wc.calculateBinWitness(input);
 
-    const fdWtns = await binFileUtils__namespace.createBinFile(wtnsFileName, "wtns", 2, 2);
+        const fdWtns = await binFileUtils__namespace.createBinFile(wtnsFileName, "wtns", 2, 2);
 
-    await writeBin(fdWtns, w, wc.prime);
-    await fdWtns.close();
+        await writeBin(fdWtns, w, wc.prime);
+        await fdWtns.close();
+    } else {
+        const fdWtns = await fastFile__namespace.createOverride(wtnsFileName);
 
+        const w = await wc.calculateWTNSBin(input);
+
+        await fdWtns.write(w);
+        await fdWtns.close();
+    }
 }
 
 /*

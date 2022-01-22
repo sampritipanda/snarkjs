@@ -18,6 +18,7 @@
 */
 
 import * as binFileUtils from "@iden3/binfileutils";
+import * as chunkFileUtils from "./chunk_utils.js";
 import * as zkeyUtils from "./zkey_utils.js";
 import { getCurveFromQ as getCurve } from "./curves.js";
 import * as misc from "./misc.js";
@@ -49,8 +50,8 @@ export default async function beacon(zkeyNameOld, zkeyNameNew, name, beaconHashS
     }
 
 
-    const {fd: fdOld, sections: sections} = await binFileUtils.readBinFile(zkeyNameOld, "zkey", 2);
-    const zkey = await zkeyUtils.readHeader(fdOld, sections);
+    const maxZKeyVersion = 2;
+    const zkey = await zkeyUtils.readHeader(zkeyNameOld, maxZKeyVersion);
 
     if (zkey.protocol != "groth16") {
         throw new Error("zkey file is not groth16");
@@ -59,7 +60,7 @@ export default async function beacon(zkeyNameOld, zkeyNameNew, name, beaconHashS
 
     const curve = await getCurve(zkey.q);
 
-    const mpcParams = await zkeyUtils.readMPCParams(fdOld, curve, sections);
+    const mpcParams = await zkeyUtils.readMPCParams(zkeyNameOld, maxZKeyVersion, curve);
 
     const fdNew = await binFileUtils.createBinFile(zkeyNameNew, "zkey", 1, 10);
 
@@ -95,31 +96,28 @@ export default async function beacon(zkeyNameOld, zkeyNameNew, name, beaconHashS
 
     mpcParams.contributions.push(curContribution);
 
-    await zkeyUtils.writeHeader(fdNew, zkey);
+    await zkeyUtils.writeHeader(zkeyNameNew, zkey);
 
     // IC
-    await binFileUtils.copySection(fdOld, sections, fdNew, 3);
+    await chunkFileUtils.copySectionFile(zkeyNameOld, zkeyNameNew, 3);
 
     // Coeffs (Keep original)
-    await binFileUtils.copySection(fdOld, sections, fdNew, 4);
+    await chunkFileUtils.copySectionFile(zkeyNameOld, zkeyNameNew, 4);
 
     // A Section
-    await binFileUtils.copySection(fdOld, sections, fdNew, 5);
+    await chunkFileUtils.copySectionFile(zkeyNameOld, zkeyNameNew, 5);
 
     // B1 Section
-    await binFileUtils.copySection(fdOld, sections, fdNew, 6);
+    await chunkFileUtils.copySectionFile(zkeyNameOld, zkeyNameNew, 6);
 
     // B2 Section
-    await binFileUtils.copySection(fdOld, sections, fdNew, 7);
+    await chunkFileUtils.copySectionFile(zkeyNameOld, zkeyNameNew, 7);
 
     const invDelta = curve.Fr.inv(curContribution.delta.prvKey);
-    await applyKeyToSection(fdOld, sections, fdNew, 8, curve, "G1", invDelta, curve.Fr.e(1), "L Section", logger);
-    await applyKeyToSection(fdOld, sections, fdNew, 9, curve, "G1", invDelta, curve.Fr.e(1), "H Section", logger);
+    await applyKeyToSection(zkeyNameOld, maxZKeyVersion, zkeyNameNew, 8, curve, "G1", invDelta, curve.Fr.e(1), "L Section", logger);
+    await applyKeyToSection(zkeyNameOld, maxZKeyVersion, zkeyNameNew, 9, curve, "G1", invDelta, curve.Fr.e(1), "H Section", logger);
 
-    await zkeyUtils.writeMPCParams(fdNew, curve, mpcParams);
-
-    await fdOld.close();
-    await fdNew.close();
+    await zkeyUtils.writeMPCParams(zkeyNameNew, curve, mpcParams);
 
     const contributionHasher = Blake2b(64);
     utils.hashPubKey(contributionHasher, curve, curContribution);
