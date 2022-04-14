@@ -6,6 +6,7 @@ var binFileUtils = require('@iden3/binfileutils');
 var fs = require('fs');
 var fastFile = require('fastfile');
 var ffjavascript = require('ffjavascript');
+var localforage = require('localforage');
 var Blake2b = require('blake2b-wasm');
 var readline = require('readline');
 var crypto = require('crypto');
@@ -37,6 +38,7 @@ function _interopNamespace(e) {
 var binFileUtils__namespace = /*#__PURE__*/_interopNamespace(binFileUtils);
 var fs__default = /*#__PURE__*/_interopDefaultLegacy(fs);
 var fastFile__namespace = /*#__PURE__*/_interopNamespace(fastFile);
+var localforage__default = /*#__PURE__*/_interopDefaultLegacy(localforage);
 var Blake2b__default = /*#__PURE__*/_interopDefaultLegacy(Blake2b);
 var readline__default = /*#__PURE__*/_interopDefaultLegacy(readline);
 var crypto__default = /*#__PURE__*/_interopDefaultLegacy(crypto);
@@ -74,7 +76,10 @@ async function endWriteSectionFile(fd) {
 async function startReadSectionFile(zkeyName, sectionId, maxVersion) {
 	const fileName = zkeyName + sectionName(sectionId);
 	const type = "zky" + sectionName(sectionId);
-    const fd = await fastFile__namespace.readExisting(fileName);
+    const item = await localforage__default["default"].getItem(
+      fileName
+    );
+    const fd = await fastFile__namespace.readExisting(item);
 
     const b = await fd.read(4);
     let readedType = "";

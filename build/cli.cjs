@@ -11,6 +11,7 @@ var Blake2b = require('blake2b-wasm');
 var readline = require('readline');
 var crypto = require('crypto');
 var binFileUtils = require('@iden3/binfileutils');
+var localforage = require('localforage');
 var ejs = require('ejs');
 var circom_runtime = require('circom_runtime');
 var jsSha3 = require('js-sha3');
@@ -43,6 +44,7 @@ var Blake2b__default = /*#__PURE__*/_interopDefaultLegacy(Blake2b);
 var readline__default = /*#__PURE__*/_interopDefaultLegacy(readline);
 var crypto__default = /*#__PURE__*/_interopDefaultLegacy(crypto);
 var binFileUtils__namespace = /*#__PURE__*/_interopNamespace(binFileUtils);
+var localforage__default = /*#__PURE__*/_interopDefaultLegacy(localforage);
 var ejs__default = /*#__PURE__*/_interopDefaultLegacy(ejs);
 var jsSha3__default = /*#__PURE__*/_interopDefaultLegacy(jsSha3);
 var Logger__default = /*#__PURE__*/_interopDefaultLegacy(Logger);
@@ -2054,7 +2056,10 @@ async function endWriteSectionFile(fd) {
 async function startReadSectionFile(zkeyName, sectionId, maxVersion) {
 	const fileName = zkeyName + sectionName(sectionId);
 	const type = "zky" + sectionName(sectionId);
-    const fd = await fastFile__namespace.readExisting(fileName);
+    const item = await localforage__default["default"].getItem(
+      fileName
+    );
+    const fd = await fastFile__namespace.readExisting(item);
 
     const b = await fd.read(4);
     let readedType = "";
