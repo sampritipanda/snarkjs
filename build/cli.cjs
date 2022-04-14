@@ -2059,7 +2059,7 @@ async function startReadSectionFile(zkeyName, sectionId, maxVersion) {
     const item = await localforage__default["default"].getItem(
       fileName
     );
-    const fd = await fastFile__namespace.readExisting(item);
+    const fd = await fastFile__namespace.readExisting(new Uint8Array(item));
 
     const b = await fd.read(4);
     let readedType = "";

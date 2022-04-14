@@ -38,7 +38,7 @@ export async function startReadSectionFile(zkeyName, sectionId, maxVersion) {
     const item = await localforage.getItem(
       fileName
     );
-    const fd = await fastFile.readExisting(item);
+    const fd = await fastFile.readExisting(new Uint8Array(item));
 
     const b = await fd.read(4);
     let readedType = "";
