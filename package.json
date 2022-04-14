@@ -46,6 +46,7 @@
     "fastfile": "0.0.20",
     "ffjavascript": "0.2.56",
     "js-sha3": "^0.8.0",
+    "localforage": "^1.10.0",
     "logplease": "^1.2.15",
     "r1csfile": "0.0.41"
   },
