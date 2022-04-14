@@ -2,6 +2,7 @@ import fs from "fs";
 import * as binFileUtils from "@iden3/binfileutils";
 import * as fastFile from "fastfile";
 import { BigBuffer } from "ffjavascript";
+import localforage from "localforage";
 
 // Each section is its own file.
 
@@ -34,7 +35,10 @@ export async function endWriteSectionFile(fd) {
 export async function startReadSectionFile(zkeyName, sectionId, maxVersion) {
 	const fileName = zkeyName + sectionName(sectionId);
 	const type = "zky" + sectionName(sectionId);
-    const fd = await fastFile.readExisting(fileName);
+    const item = await localforage.getItem(
+      fileName
+    );
+    const fd = await fastFile.readExisting(item);
 
     const b = await fd.read(4);
     let readedType = "";
