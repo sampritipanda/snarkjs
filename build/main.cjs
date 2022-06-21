@@ -5475,15 +5475,16 @@ async function phase2verifyFromR1cs(r1csFileName, pTauFileName, zkeyFileName, lo
 async function phase2contribute(zkeyNameOld, zkeyNameNew, name, entropy, logger) {
     await Blake2b__default["default"].ready();
 
-    const {fd: fdOld, sections: sections} = await binFileUtils__namespace.readBinFile(zkeyNameOld, "zkey", 2);
-    const zkey = await readHeader$1(fdOld, sections);
+    const maxZKeyVersion = 2;
+    const zkey = await readHeader$1(zkeyNameOld, maxZKeyVersion);
+
     if (zkey.protocol != "groth16") {
         throw new Error("zkey file is not groth16");
     }
 
     const curve = await getCurveFromQ(zkey.q);
 
-    const mpcParams = await readMPCParams(fdOld, curve, sections);
+    const mpcParams = await readMPCParams(zkeyNameOld, maxZKeyVersion, curve);
 
     const fdNew = await binFileUtils__namespace.createBinFile(zkeyNameNew, "zkey", 1, 10);
 
@@ -5520,25 +5521,25 @@ async function phase2contribute(zkeyNameOld, zkeyNameNew, name, entropy, logger)
     await writeHeader(fdNew, zkey);
 
     // IC
-    await copySectionFile(fdOld, sections, fdNew);
+    await copySectionFile(zkeyNameOld, zkeyNameNew, 3);
 
     // Coeffs (Keep original)
-    await copySectionFile(fdOld, sections, fdNew);
+    await copySectionFile(zkeyNameOld, zkeyNameNew, 4);
 
     // A Section
-    await copySectionFile(fdOld, sections, fdNew);
+    await copySectionFile(zkeyNameOld, zkeyNameNew, 5);
 
     // B1 Section
-    await copySectionFile(fdOld, sections, fdNew);
+    await copySectionFile(zkeyNameOld, zkeyNameNew, 6);
 
     // B2 Section
-    await copySectionFile(fdOld, sections, fdNew);
+    await copySectionFile(zkeyNameOld, zkeyNameNew, 7);
 
     const invDelta = curve.Fr.inv(curContribution.delta.prvKey);
-    await applyKeyToSection(fdOld, sections, fdNew, 8, curve, "G1", invDelta, curve.Fr.e(1), "L Section", logger);
-    await applyKeyToSection(fdOld, sections, fdNew, 9, curve, "G1", invDelta, curve.Fr.e(1), "H Section", logger);
+    await applyKeyToSection(zkeyNameOld, maxZKeyVersion, zkeyNameNew, 8, curve, "G1", invDelta, curve.Fr.e(1), "L Section", logger);
+    await applyKeyToSection(zkeyNameOld, maxZKeyVersion, zkeyNameNew, 9, curve, "G1", invDelta, curve.Fr.e(1), "H Section", logger);
 
-    await writeMPCParams(fdNew, curve, mpcParams);
+    await writeMPCParams(zkeyNameNew, curve, mpcParams);
 
     await fdOld.close();
     await fdNew.close();
