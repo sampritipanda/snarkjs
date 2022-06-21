@@ -4975,7 +4975,6 @@ async function phase2contribute(zkeyNameOld, zkeyNameNew, name, entropy, logger)
 
     await writeMPCParams(zkeyNameNew, curve, mpcParams);
 
-    await fdOld.close();
     await fdNew.close();
 
     const contributionHasher = Blake2b__default["default"](64);

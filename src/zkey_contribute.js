@@ -96,7 +96,6 @@ export default async function phase2contribute(zkeyNameOld, zkeyNameNew, name, e
 
     await zkeyUtils.writeMPCParams(zkeyNameNew, curve, mpcParams);
 
-    await fdOld.close();
     await fdNew.close();
 
     const contributionHasher = Blake2b(64);
