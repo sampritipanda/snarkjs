@@ -4952,7 +4952,7 @@ async function phase2contribute(zkeyNameOld, zkeyNameNew, name, entropy, logger)
 
     mpcParams.contributions.push(curContribution);
 
-    await writeHeader(fdNew, zkey);
+    await writeHeader(zkeyNameNew, zkey);
 
     // IC
     await copySectionFile(zkeyNameOld, zkeyNameNew, 3);

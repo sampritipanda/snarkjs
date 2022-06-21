@@ -73,7 +73,7 @@ export default async function phase2contribute(zkeyNameOld, zkeyNameNew, name, e
 
     mpcParams.contributions.push(curContribution);
 
-    await zkeyUtils.writeHeader(fdNew, zkey);
+    await zkeyUtils.writeHeader(zkeyNameNew, zkey);
 
     // IC
     await chunkFileUtils.copySectionFile(zkeyNameOld, zkeyNameNew, 3);
