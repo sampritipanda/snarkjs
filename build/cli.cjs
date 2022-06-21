@@ -4954,19 +4954,19 @@ async function phase2contribute(zkeyNameOld, zkeyNameNew, name, entropy, logger)
     await writeHeader(fdNew, zkey);
 
     // IC
-    await binFileUtils__namespace.copySection(fdOld, sections, fdNew, 3);
+    await copySectionFile(fdOld, sections, fdNew);
 
     // Coeffs (Keep original)
-    await binFileUtils__namespace.copySection(fdOld, sections, fdNew, 4);
+    await copySectionFile(fdOld, sections, fdNew);
 
     // A Section
-    await binFileUtils__namespace.copySection(fdOld, sections, fdNew, 5);
+    await copySectionFile(fdOld, sections, fdNew);
 
     // B1 Section
-    await binFileUtils__namespace.copySection(fdOld, sections, fdNew, 6);
+    await copySectionFile(fdOld, sections, fdNew);
 
     // B2 Section
-    await binFileUtils__namespace.copySection(fdOld, sections, fdNew, 7);
+    await copySectionFile(fdOld, sections, fdNew);
 
     const invDelta = curve.Fr.inv(curContribution.delta.prvKey);
     await applyKeyToSection(fdOld, sections, fdNew, 8, curve, "G1", invDelta, curve.Fr.e(1), "L Section", logger);

@@ -18,6 +18,7 @@
 */
 
 import * as binFileUtils from "@iden3/binfileutils";
+import * as chunkFileUtils from "./chunk_utils.js";
 import * as zkeyUtils from "./zkey_utils.js";
 import { getCurveFromQ as getCurve } from "./curves.js";
 import * as misc from "./misc.js";
@@ -74,19 +75,19 @@ export default async function phase2contribute(zkeyNameOld, zkeyNameNew, name, e
     await zkeyUtils.writeHeader(fdNew, zkey);
 
     // IC
-    await binFileUtils.copySection(fdOld, sections, fdNew, 3);
+    await chunkFileUtils.copySectionFile(fdOld, sections, fdNew, 3);
 
     // Coeffs (Keep original)
-    await binFileUtils.copySection(fdOld, sections, fdNew, 4);
+    await chunkFileUtils.copySectionFile(fdOld, sections, fdNew, 4);
 
     // A Section
-    await binFileUtils.copySection(fdOld, sections, fdNew, 5);
+    await chunkFileUtils.copySectionFile(fdOld, sections, fdNew, 5);
 
     // B1 Section
-    await binFileUtils.copySection(fdOld, sections, fdNew, 6);
+    await chunkFileUtils.copySectionFile(fdOld, sections, fdNew, 6);
 
     // B2 Section
-    await binFileUtils.copySection(fdOld, sections, fdNew, 7);
+    await chunkFileUtils.copySectionFile(fdOld, sections, fdNew, 7);
 
     const invDelta = curve.Fr.inv(curContribution.delta.prvKey);
     await applyKeyToSection(fdOld, sections, fdNew, 8, curve, "G1", invDelta, curve.Fr.e(1), "L Section", logger);
