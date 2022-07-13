@@ -24,6 +24,12 @@ export default async function groth16FullProve(input, wasmFile, zkeyFileName, lo
     const wtns= {
         type: "mem"
     };
+    console.time("witness calculation");
     await wtns_calculate(input, wasmFile, wtns);
-    return await groth16_prove(zkeyFileName, wtns, logger);
+    console.timeEnd("witness calculation");
+
+    console.time("groth16 prove");
+    const proof = await groth16_prove(zkeyFileName, wtns, logger);
+    console.timeEnd("groth16 prove");
+    return proof;
 }
