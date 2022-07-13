@@ -140,6 +140,8 @@ export default async function groth16Prove(zkeyFileName, witnessFileName, logger
     proof = stringifyBigInts(proof);
     publicSignals = stringifyBigInts(publicSignals);
 
+    await curve.terminate();
+
     return {proof, publicSignals};
 }
 

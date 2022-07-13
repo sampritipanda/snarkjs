@@ -21,7 +21,7 @@ export async function getCurveFromR(r) {
 export async function getCurveFromQ(q) {
     let curve;
     if (Scalar.eq(q, bn128q)) {
-        curve = await buildBn128();
+        curve = await buildBn128(true);
     } else if (Scalar.eq(q, bls12381q)) {
         curve = await buildBls12381();
     } else {
