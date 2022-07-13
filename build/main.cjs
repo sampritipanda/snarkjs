@@ -158,7 +158,7 @@ const bn128q = ffjavascript.Scalar.e("218882428718392752222464057452572750886963
 async function getCurveFromQ(q) {
     let curve;
     if (ffjavascript.Scalar.eq(q, bn128q)) {
-        curve = await ffjavascript.buildBn128();
+        curve = await ffjavascript.buildBn128(true);
     } else if (ffjavascript.Scalar.eq(q, bls12381q)) {
         curve = await ffjavascript.buildBls12381();
     } else {
@@ -933,6 +933,8 @@ async function groth16Prove(zkeyFileName, witnessFileName, logger) {
     proof = stringifyBigInts$3(proof);
     publicSignals = stringifyBigInts$3(publicSignals);
 
+    await curve.terminate();
+
     return {proof, publicSignals};
 }
 
@@ -1232,8 +1234,14 @@ async function groth16FullProve(input, wasmFile, zkeyFileName, logger) {
     const wtns= {
         type: "mem"
     };
+    console.time("witness calculation");
     await wtnsCalculate(input, wasmFile, wtns);
-    return await groth16Prove(zkeyFileName, wtns, logger);
+    console.timeEnd("witness calculation");
+
+    console.time("groth16 prove");
+    const proof = await groth16Prove(zkeyFileName, wtns, logger);
+    console.timeEnd("groth16 prove");
+    return proof;
 }
 
 /*
