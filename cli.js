@@ -175,6 +175,13 @@ const commands = [
         action: zkeyContribute
     },
     {
+        cmd: "zkey convert <circuit_old.zkey> <circuit_new.zkey>",
+        description: "converts a standard zkey file into a chunked one",
+        alias: ["zkcc"],
+        options: "-verbose|v",
+        action: zkeyConvert
+    },
+    {
         cmd: "zkey export bellman <circuit_xxxx.zkey> [circuit.mpcparams]",
         description: "Export a zKey to a MPCParameters file compatible with kobi/phase2 (Bellman)",
         alias: ["zkeb"],
@@ -956,6 +963,19 @@ async function zkeyContribute(params, options) {
     if (options.verbose) Logger.setLogLevel("DEBUG");
 
     return zkey.contribute(zkeyOldName, zkeyNewName, options.name, options.entropy, logger);
+}
+
+// zkey convert <circuit_old.zkey> <circuit_new.zkey>
+async function zkeyConvert(params, options) {
+    let zkeyOldName;
+    let zkeyNewName;
+f
+    zkeyOldName = params[0];
+    zkeyNewName = params[1];
+
+    if (options.verbose) Logger.setLogLevel("DEBUG");
+
+    return zkey.convert(zkeyOldName, zkeyNewName);
 }
 
 // zkey beacon <circuit_old.zkey> <circuit_new.zkey> <beaconHash(Hex)> <numIterationsExp>

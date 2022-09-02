@@ -5,7 +5,7 @@ import { BigBuffer } from "ffjavascript";
 
 // Each section is its own file.
 
-function sectionName(sectionId) {
+export function sectionName(sectionId) {
     return String.fromCharCode('a'.charCodeAt(0) + sectionId);
 }
 

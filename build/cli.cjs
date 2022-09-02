@@ -310,7 +310,7 @@ async function clProcessor(commands) {
         }
     }
     if (cl.length>0) console.log("Invalid command");
-    helpAll();
+    // helpAll();
     return 99;
 
     function calculateMatch(cmd, cl) {
@@ -2872,7 +2872,7 @@ async function truncate(ptauFilename, template, logger) {
     along with snarkJS. If not, see <https://www.gnu.org/licenses/>.
 */
 
-async function convert(oldPtauFilename, newPTauFilename, logger) {
+async function convert$1(oldPtauFilename, newPTauFilename, logger) {
 
     const {fd: fdOld, sections} = await binFileUtils__namespace.readBinFile(oldPtauFilename, "ptau", 1);
     const {curve, power} = await readPTauHeader(fdOld, sections);
@@ -4986,6 +4986,79 @@ async function phase2contribute(zkeyNameOld, zkeyNameNew, name, entropy, logger)
     if (logger) logger.info(formatHash(contribuionHash, "Contribution Hash: "));
 
     return contribuionHash;
+}
+
+/*
+    Copyright 2018 0KIMS association.
+
+    This file is part of snarkJS.
+
+    snarkJS is a free software: you can redistribute it and/or modify it
+    under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    snarkJS is distributed in the hope that it will be useful, but WITHOUT
+    ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+    or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public
+    License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with snarkJS. If not, see <https://www.gnu.org/licenses/>.
+*/
+
+async function convert(zkeyNameOld, zkeyNameNew) {
+    await Blake2b__default["default"].ready();
+
+    const {fd: fdOld, sections: sections} = await binFileUtils__namespace.readBinFile(zkeyNameOld, "zkey", 2);
+    const zkey = await readHeader$1(fdOld, sections);
+
+    if (zkey.protocol != "groth16") {
+        throw new Error("zkey file is not groth16");
+    }
+
+    const curve = await getCurveFromQ(zkey.q);
+
+    await readMPCParams(zkeyNameOld, maxZKeyVersion, curve);
+
+    await writeHeader(zkeyNameNew, zkey);
+
+    // IC
+    await copyToChunk(fdOld, sections, zkeyNameNew, 3);
+
+    // Coeffs (Keep original)
+    await copyToChunk(fdOld, sections, zkeyNameNew, 4);
+
+    // A Section
+    await copyToChunk(fdOld, sections, zkeyNameNew, 5);
+
+    // B1 Section
+    await copyToChunk(fdOld, sections, zkeyNameNew, 6);
+
+    // B2 Section
+    await copyToChunk(fdOld, sections, zkeyNameNew, 7);
+
+    // remaining sections
+    await copyToChunk(fdOld, sections, zkeyNameNew, 8);
+    await copyToChunk(fdOld, sections, zkeyNameNew, 9);
+    await copyToChunk(fdOld, sections, zkeyNameNew, 10);
+}
+
+async function copyToChunk(fdFrom, sections, zkeyNameNew, sectionId, size) {
+    if (typeof size === "undefined") {
+        size = sections[sectionId][0].size;
+    }
+    const chunkSize = fdFrom.pageSize;
+    await startReadUniqueSection(fdFrom, sections, sectionId);
+
+    let fdTo = await startWriteSectionFile(zkeyNameNew, sectionId);
+    for (let p=0; p<size; p+=chunkSize) {
+        const l = Math.min(size -p, chunkSize);
+        const buff = await fdFrom.read(l);
+        await fdTo.write(buff);
+    }
+    await endWriteSectionFile(fdTo);
+    await endReadSection(fdFrom, size != sections[sectionId][0].size);
 }
 
 /*
@@ -8031,6 +8104,13 @@ const commands = [
         action: zkeyContribute
     },
     {
+        cmd: "zkey convert <circuit_old.zkey> <circuit_new.zkey>",
+        description: "converts a standard zkey file into a chunked one",
+        alias: ["zkcc"],
+        options: "-verbose|v",
+        action: zkeyConvert
+    },
+    {
         cmd: "zkey export bellman <circuit_xxxx.zkey> [circuit.mpcparams]",
         description: "Export a zKey to a MPCParameters file compatible with kobi/phase2 (Bellman)",
         alias: ["zkeb"],
@@ -8631,7 +8711,7 @@ async function powersOfTauConvert(params, options) {
 
     if (options.verbose) Logger__default["default"].setLogLevel("DEBUG");
 
-    return await convert(oldPtauName, newPtauName, logger);
+    return await convert$1(oldPtauName, newPtauName, logger);
 }
 
 
@@ -8812,6 +8892,19 @@ async function zkeyContribute(params, options) {
     if (options.verbose) Logger__default["default"].setLogLevel("DEBUG");
 
     return phase2contribute(zkeyOldName, zkeyNewName, options.name, options.entropy, logger);
+}
+
+// zkey convert <circuit_old.zkey> <circuit_new.zkey>
+async function zkeyConvert(params, options) {
+    let zkeyOldName;
+    let zkeyNewName;
+f;
+    zkeyOldName = params[0];
+    zkeyNewName = params[1];
+
+    if (options.verbose) Logger__default["default"].setLogLevel("DEBUG");
+
+    return convert(zkeyOldName, zkeyNewName);
 }
 
 // zkey beacon <circuit_old.zkey> <circuit_new.zkey> <beaconHash(Hex)> <numIterationsExp>

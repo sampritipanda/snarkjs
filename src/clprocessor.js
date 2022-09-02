@@ -79,7 +79,7 @@ export default async function clProcessor(commands) {
         }
     }
     if (cl.length>0) console.log("Invalid command");
-    helpAll();
+    // helpAll();
     return 99;
 
     function calculateMatch(cmd, cl) {

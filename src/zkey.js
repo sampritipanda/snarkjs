@@ -23,6 +23,7 @@ export {default as importBellman} from "./zkey_import_bellman.js";
 export {default as verifyFromR1cs} from "./zkey_verify_fromr1cs.js";
 export {default as verifyFromInit} from "./zkey_verify_frominit.js";
 export {default as contribute} from "./zkey_contribute.js";
+export {default as convert} from "./zkey_convert.js";
 export {default as beacon} from "./zkey_beacon.js";
 export {default as exportJson} from "./zkey_export_json.js";
 export {default as bellmanContribute} from "./zkey_bellman_contribute.js";
