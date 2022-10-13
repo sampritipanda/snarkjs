@@ -218,8 +218,6 @@ export async function readZKey(fileName, toObject) {
     // const protocolId = await fd.readULE32();
     // await chunkFileUtils.endReadSectionFile(fd);
 
-    const zkey = await readHeader(fd, sections, toObject);
-
     const Fr = new F1Field(zkey.r);
     const Rr = Scalar.mod(Scalar.shl(1, zkey.n8r*8), zkey.r);
     const Rri = Fr.inv(Rr);
