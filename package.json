@@ -1,5 +1,5 @@
 {
-  "name": "snarkjs",
+  "name": "snarkjs-vivek",
   "type": "module",
   "version": "0.4.12",
   "description": "zkSNARKs implementation in JavaScript",
@@ -17,7 +17,7 @@
     "buildiifemin": "BROWSER=true rollup -c config/rollup.iife_min.config.js"
   },
   "bin": {
-    "snarkjs": "build/cli.cjs"
+    "snarkjs-vivek": "build/cli.cjs"
   },
   "directories": {
     "templates": "templates"
